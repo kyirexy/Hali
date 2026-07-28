@@ -1,94 +1,908 @@
 (() => {
   'use strict';
-  const $ = s => document.querySelector(s);
-  const E = {
-    c: $('#battleCanvas'), hp: $('#doorHp'), hpBar: $('#doorBar'), money: $('#money'), income: $('#income'), time: $('#timeLeft'), wave: $('#waveLabel'),
-    threat: $('#threat'), doorState: $('#doorStatus'), doorBtn: $('#upgradeDoor'), grid: $('#storeGrid'), combo: $('#comboBadge'), coachTitle: $('#coachTitle'),
-    coachText: $('#coachText'), emergency: $('#emergencyButton'), restart: $('#restartButton'), status: $('#statusLine'), sound: $('#soundToggle'), modal: $('#resultModal'),
-    resultTitle: $('#resultTitle'), resultText: $('#resultText'), resultIncome: $('#resultIncome'), resultKills: $('#resultKills'), resultCombos: $('#resultCombos'), retry: $('#resultRetry')
-  };
-  const ctx = E.c.getContext('2d');
-  const DEF = {
-    shelf: { name: '货架', icon: '🛒', cost: 20 }, turret: { name: '炮台', icon: '🔫', cost: 30 },
-    freezer: { name: '冷柜', icon: '❄️', cost: 35 }, camera: { name: '监控', icon: '📹', cost: 40 }
-  };
-  let S, raf, last = performance.now(), audio, soundOn = true;
 
-  const fresh = () => ({ running:true, t:0, money:60, hp:100, hpMax:100, doorLv:1, selected:'shelf', cells:Array(9).fill(null), enemies:[], shots:[], fx:[], spawn:0, cash:0, freeze:0, emergency:false, frozenUntil:0, kills:0, maxIncome:1, combos:new Set(), tutorial:0, boss:false, lock:0, nextId:1 });
-  const neigh = i => { const r=Math.floor(i/3),c=i%3,o=[]; [[-1,0],[1,0],[0,-1],[0,1]].forEach(([a,b])=>{const y=r+a,x=c+b;if(y>=0&&y<3&&x>=0&&x<3)o.push(y*3+x)});return o; };
-  const counts = () => S.cells.reduce((a,v)=>(v&&(a[v.type]++),a),{shelf:0,turret:0,freezer:0,camera:0});
-  const beep = (f,d=.06,type='sine',v=.025) => { if(!soundOn)return; try{audio ||= new (AudioContext||webkitAudioContext)();const o=audio.createOscillator(),g=audio.createGain();o.frequency.value=f;o.type=type;g.gain.setValueAtTime(v,audio.currentTime);g.gain.exponentialRampToValueAtTime(.0001,audio.currentTime+d);o.connect(g).connect(audio.destination);o.start();o.stop(audio.currentTime+d)}catch{} };
-  const say = (m,k='',lock=0) => { if(S.lock>0&&k!=='bad')return;E.status.textContent=m;E.status.className=`status-line${k?' '+k:''}`;S.lock=Math.max(S.lock,lock); };
-  const select = type => { S.selected=type; document.querySelectorAll('.build-card').forEach(b=>b.classList.toggle('selected',b.dataset.build===type)); };
+  const $ = (selector) => document.querySelector(selector);
+  const $$ = (selector) => [...document.querySelectorAll(selector)];
 
-  function stats(){
-    let income=1,dps=0,freezePower=0,laser=0,cold=false; const active=new Set();
-    S.cells.forEach((f,i)=>{ if(!f)return; const a=neigh(i).map(n=>S.cells[n]).filter(Boolean);
-      if(f.type==='shelf'){let n=2*f.lv;if(a.some(x=>x.type==='shelf')){n*=1.5;active.add('黄金货道')}income+=n}
-      if(f.type==='turret'){let n=7+5*f.lv;if(a.some(x=>x.type==='camera')){n*=1.8;laser++;active.add('锁定激光')}dps+=n}
-      if(f.type==='freezer'){freezePower+=f.lv;if(a.some(x=>x.type==='camera')){cold=true;active.add('冷链监控')}}
+  const els = {
+    doorValue: $('#doorValue'), doorMaxValue: $('#doorMaxValue'), doorBar: $('#doorBar'),
+    moneyValue: $('#moneyValue'), repValue: $('#repValue'), evidenceValue: $('#evidenceValue'), evidenceBar: $('#evidenceBar'),
+    roundValue: $('#roundValue'), phaseText: $('#phaseText'), ruleTitle: $('#ruleTitle'), ruleHint: $('#ruleHint'), roundTimerBar: $('#roundTimerBar'),
+    visitorLane: $('#visitorLane'), inspectionHint: $('#inspectionHint'), arrivedValue: $('#arrivedValue'), visitorTotalValue: $('#visitorTotalValue'),
+    forecastValue: $('#forecastValue'), closeEarlyButton: $('#closeEarlyButton'), closeButtonHint: $('#closeButtonHint'),
+    battleCanvas: $('#battleCanvas'), battleHint: $('#battleHint'), enemyValue: $('#enemyValue'), protocolButton: $('#protocolButton'),
+    storeGrid: $('#storeGrid'), synergyStrip: $('#synergyStrip'), doorUpgradeButton: $('#doorUpgradeButton'),
+    coach: $('#coach'), coachIcon: $('#coachIcon'), coachTitle: $('#coachTitle'), coachText: $('#coachText'),
+    restartButton: $('#restartButton'), soundButton: $('#soundButton'),
+    upgradeModal: $('#upgradeModal'), upgradeChoices: $('#upgradeChoices'),
+    resultModal: $('#resultModal'), resultTitle: $('#resultTitle'), resultText: $('#resultText'),
+    resultCorrect: $('#resultCorrect'), resultFalse: $('#resultFalse'), resultKills: $('#resultKills'), resultRetryButton: $('#resultRetryButton')
+  };
+
+  const ctx = els.battleCanvas.getContext('2d');
+  const GAME_SPEED = Math.max(1, Number(window.__GAME_SPEED__ || 1));
+
+  const FACILITIES = {
+    shelf: {
+      name: '货架', icon: '🛒', cost: 24,
+      day: (level) => `顾客结账 +${2 + level}`,
+      night: (level) => `罐头投射 ${7 + level * 4}伤害`
+    },
+    freezer: {
+      name: '冷柜', icon: '❄️', cost: 32,
+      day: (level) => `冷饮顾客额外 +${2 + level}`,
+      night: (level) => `每${Math.max(2.4, 4.4 - level * .45).toFixed(1)}秒冻结`
+    },
+    camera: {
+      name: '监控', icon: '📹', cost: 38,
+      day: () => '每轮提示一名可疑者',
+      night: (level) => `标记敌人，承伤 +${45 + level * 12}%`
+    },
+    generator: {
+      name: '发电机', icon: '⚡', cost: 42,
+      day: (level) => `证据充能 +${level}/秒`,
+      night: (level) => `链电 ${8 + level * 4}伤害`
+    }
+  };
+
+  const RULES = [
+    {
+      title: '没有影子的人，不是顾客',
+      hint: '只看“影子”特征。无影者必须拒绝。',
+      fields: ['shadow'],
+      isAnomaly: (t) => !t.shadow
+    },
+    {
+      title: '无影且体温冰冷，才是异常',
+      hint: '必须同时满足两个条件，别误伤普通顾客。',
+      fields: ['shadow', 'cold'],
+      isAnomaly: (t) => !t.shadow && t.cold
+    },
+    {
+      title: '红伞配反向脚印，是店长的替身',
+      hint: '最终轮会出现无面店长；识破替身可削弱Boss。',
+      fields: ['umbrella', 'footprints'],
+      isAnomaly: (t) => t.umbrella === 'red' && t.footprints === 'reverse'
+    }
+  ];
+
+  const ROUND_CONFIG = [
+    { visitors: 5, anomalies: 2, business: 13, baseEnemies: 3, boss: false },
+    { visitors: 5, anomalies: 2, business: 14, baseEnemies: 5, boss: false },
+    { visitors: 5, anomalies: 3, business: 15, baseEnemies: 7, boss: true }
+  ];
+
+  const UPGRADE_POOL = [
+    { id: 'coldChain', title: '冷链弹仓', desc: '货架与冷柜相邻时，罐头会穿透并附带减速。', apply: (s) => { s.upgrades.coldChain = true; } },
+    { id: 'nightGrid', title: '夜视电网', desc: '监控与发电机相邻时，链电优先攻击被标记目标，并短暂眩晕。', apply: (s) => { s.upgrades.nightGrid = true; } },
+    { id: 'honestTrade', title: '诚信经营', desc: '每放行一名普通顾客，卷帘门恢复2点耐久。', apply: (s) => { s.upgrades.honestTrade = true; } },
+    { id: 'bounty', title: '异常悬赏', desc: '每正确拒绝一名异常，额外获得¥10。', apply: (s) => { s.upgrades.bounty = true; } },
+    { id: 'doubleDoor', title: '双层卷帘', desc: '门体上限+35，并立刻修复35点。', apply: (s) => { s.doorMax += 35; s.doorHp = Math.min(s.doorMax, s.doorHp + 35); } },
+    { id: 'clearance', title: '临期清仓', desc: '所有货架收入+2，但下一轮敌人移动速度+12%。', risk: '高收益 / 高风险', apply: (s) => { s.upgrades.clearance = (s.upgrades.clearance || 0) + 1; s.enemySpeedBonus += .12; } },
+    { id: 'protocolRefund', title: '封店回扣', desc: '使用封店协议后，获得¥24用于下一轮改造。', apply: (s) => { s.upgrades.protocolRefund = true; } },
+    { id: 'cameraSweep', title: '全景巡检', desc: '监控提示不再只亮边框，还会揭示“高度可疑”文字。', apply: (s) => { s.upgrades.cameraSweep = true; } }
+  ];
+
+  const NAMES = ['林姨', '小周', '阿哲', '雨桐', '老贺', '小满', '陈叔', '小禾', '阿宁', '海生'];
+  const FACES = ['🧑', '👩', '👨', '🧔', '👵', '🧑‍🦱', '👩‍🦰', '🧑‍💼'];
+
+  let audioContext = null;
+  let soundEnabled = true;
+  let game = null;
+  let rafId = 0;
+  let lastFrame = 0;
+
+  function initialGrid() {
+    return [
+      null, null, null,
+      null, { type: 'camera', level: 1 }, null,
+      null, { type: 'shelf', level: 1 }, null
+    ];
+  }
+
+  function createState() {
+    return {
+      round: 0,
+      phase: 'business',
+      timer: 0,
+      timerMax: 1,
+      money: 72,
+      reputation: 100,
+      doorHp: 100,
+      doorMax: 100,
+      evidence: 0,
+      selectedBuild: 'shelf',
+      visitors: [],
+      visitorCursor: 0,
+      spawnClock: 0,
+      enemies: [],
+      projectiles: [],
+      grid: initialGrid(),
+      facilityClocks: {},
+      cameraHintUsed: false,
+      protocolUsedThisDefense: false,
+      upgrades: {},
+      chosenUpgrades: [],
+      enemySpeedBonus: 0,
+      totals: { correct: 0, false: 0, missed: 0, kills: 0 },
+      defenseRoundData: null,
+      businessPaused: false,
+      ended: false,
+      perfectChecks: 0
+    };
+  }
+
+  function startGame() {
+    if (rafId) cancelAnimationFrame(rafId);
+    game = createState();
+    els.upgradeModal.classList.add('hidden');
+    els.resultModal.classList.add('hidden');
+    startBusinessRound(0);
+    lastFrame = performance.now();
+    rafId = requestAnimationFrame(loop);
+    renderAll();
+  }
+
+  function startBusinessRound(roundIndex) {
+    game.round = roundIndex;
+    game.phase = 'business';
+    const cfg = ROUND_CONFIG[roundIndex];
+    game.timer = cfg.business;
+    game.timerMax = cfg.business;
+    game.visitors = generateVisitors(roundIndex, cfg.visitors, cfg.anomalies);
+    game.visitors[0].arrived = true;
+    game.visitorCursor = 1;
+    game.spawnClock = 0;
+    game.cameraHintUsed = false;
+    game.protocolUsedThisDefense = false;
+    game.enemies = [];
+    game.projectiles = [];
+    setCoach(
+      roundIndex === 0 ? '👁️' : '📋',
+      roundIndex === 0 ? '先看守则，再看顾客' : `第${roundIndex + 1}轮守则已变化`,
+      roundIndex === 0 ? '符合守则的人才是异常。点中可疑顾客，状态会变为“拒绝”。' : '规则会组合多个特征。误拒会损失声誉，漏掉异常会让它从店内偷袭。'
+    );
+    renderAll();
+  }
+
+  function generateVisitors(roundIndex, count, anomalyCount) {
+    const rule = RULES[roundIndex];
+    const result = [];
+    let guard = 0;
+    while (result.length < count && guard < 500) {
+      guard += 1;
+      const traits = randomTraits();
+      const anomaly = rule.isAnomaly(traits);
+      const currentAnomalies = result.filter((v) => v.anomaly).length;
+      const remaining = count - result.length;
+      const needed = anomalyCount - currentAnomalies;
+      if (anomaly && needed <= 0) continue;
+      if (!anomaly && remaining <= needed) continue;
+      result.push({
+        id: `${roundIndex}-${result.length}-${Math.random().toString(16).slice(2)}`,
+        name: NAMES[Math.floor(Math.random() * NAMES.length)],
+        face: FACES[Math.floor(Math.random() * FACES.length)],
+        traits,
+        anomaly,
+        rejected: false,
+        arrived: false,
+        cameraHint: false
+      });
+    }
+    return shuffle(result);
+  }
+
+  function randomTraits() {
+    return {
+      shadow: Math.random() > .34,
+      cold: Math.random() < .42,
+      umbrella: ['none', 'red', 'blue'][Math.floor(Math.random() * 3)],
+      footprints: Math.random() < .34 ? 'reverse' : 'normal'
+    };
+  }
+
+  function loop(now) {
+    const dt = Math.min(.05, (now - lastFrame) / 1000 || 0);
+    lastFrame = now;
+    if (!game.ended && !game.businessPaused) update(dt * GAME_SPEED);
+    drawBattle(now / 1000);
+    rafId = requestAnimationFrame(loop);
+  }
+
+  function update(dt) {
+    if (game.phase === 'business') updateBusiness(dt);
+    else if (game.phase === 'defense') updateDefense(dt);
+  }
+
+  function updateBusiness(dt) {
+    const cfg = ROUND_CONFIG[game.round];
+    game.timer = Math.max(0, game.timer - dt);
+    game.spawnClock += dt;
+
+    const generatorLevels = totalFacilityLevels('generator');
+    if (generatorLevels > 0) {
+      game.evidence = Math.min(100, game.evidence + generatorLevels * dt * .75);
+    }
+
+    const spawnInterval = cfg.business / (cfg.visitors + .6);
+    while (game.visitorCursor < game.visitors.length && game.spawnClock >= spawnInterval) {
+      game.spawnClock -= spawnInterval;
+      const visitor = game.visitors[game.visitorCursor];
+      visitor.arrived = true;
+      game.visitorCursor += 1;
+      tone(520, .05, 'sine');
+      renderVisitors();
+      updateForecast();
+    }
+
+    maybeCameraHint();
+    if (game.timer <= 0) closeStore(false);
+    renderTop();
+  }
+
+  function maybeCameraHint() {
+    if (game.cameraHintUsed || game.timer > game.timerMax * .55 || totalFacilityLevels('camera') <= 0) return;
+    const candidates = game.visitors.filter((v) => v.arrived && v.anomaly && !v.rejected);
+    if (!candidates.length) return;
+    const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+    chosen.cameraHint = true;
+    game.cameraHintUsed = true;
+    els.inspectionHint.textContent = game.upgrades.cameraSweep ? '监控提示：标蓝顾客高度可疑' : '监控出现雪花：有一名顾客画面不稳定';
+    renderVisitors();
+  }
+
+  function closeStore(manual) {
+    if (game.phase !== 'business') return;
+    const arrived = game.visitors.filter((v) => v.arrived);
+    const correct = arrived.filter((v) => v.anomaly && v.rejected).length;
+    const falseReject = arrived.filter((v) => !v.anomaly && v.rejected).length;
+    const missed = arrived.filter((v) => v.anomaly && !v.rejected).length;
+    const acceptedNormals = arrived.filter((v) => !v.anomaly && !v.rejected);
+    const allArrived = arrived.length === game.visitors.length;
+    const perfect = allArrived && correct === game.visitors.filter((v) => v.anomaly).length && falseReject === 0 && missed === 0;
+
+    const payout = acceptedNormals.reduce((sum, visitor) => sum + visitorPayout(visitor), 0);
+    game.money += payout;
+    game.reputation = Math.max(0, game.reputation - falseReject * 14 - missed * 8);
+    game.evidence = Math.min(100, game.evidence + correct * 22 + (perfect ? 18 : 0));
+    if (game.upgrades.bounty) game.money += correct * 10;
+    if (game.upgrades.honestTrade) game.doorHp = Math.min(game.doorMax, game.doorHp + acceptedNormals.length * 2);
+
+    game.totals.correct += correct;
+    game.totals.false += falseReject;
+    game.totals.missed += missed;
+    if (perfect) game.perfectChecks += 1;
+
+    game.defenseRoundData = { correct, falseReject, missed, accepted: acceptedNormals.length, payout, perfect, manual };
+    beginDefense();
+  }
+
+  function visitorPayout(visitor) {
+    const shelfLevels = totalFacilityLevels('shelf');
+    const freezerLevels = totalFacilityLevels('freezer');
+    let value = 6 + shelfLevels * 2;
+    if (visitor.traits.cold) value += freezerLevels * 2;
+    if (game.upgrades.clearance) value += shelfLevels * 2 * game.upgrades.clearance;
+    if (hasGoldenAisle()) value = Math.round(value * 1.25);
+    value *= Math.max(.55, game.reputation / 100);
+    return Math.round(value);
+  }
+
+  function beginDefense() {
+    game.phase = 'defense';
+    game.timer = 999;
+    game.timerMax = 1;
+    game.enemies = createEnemyWave();
+    game.projectiles = [];
+    game.facilityClocks = {};
+    els.inspectionHint.textContent = `结账 ¥${game.defenseRoundData.payout} · 正确拒绝 ${game.defenseRoundData.correct} · 漏入 ${game.defenseRoundData.missed}`;
+    setCoach(
+      game.defenseRoundData.missed ? '🚨' : '🌙',
+      game.defenseRoundData.missed ? '漏掉的异常从店内偷袭！' : '熄灯，设施切换为防御模式',
+      game.defenseRoundData.missed ? '盘查错误会直接增加门前压力。下轮可根据失败原因调整。' : '观察同一设施如何改变用途；设施相邻还会形成跨模式联动。'
+    );
+    tone(170, .16, 'sawtooth');
+    renderAll();
+  }
+
+  function createEnemyWave() {
+    const cfg = ROUND_CONFIG[game.round];
+    const missed = game.defenseRoundData.missed;
+    const enemies = [];
+    for (let i = 0; i < cfg.baseEnemies; i += 1) {
+      enemies.push(makeEnemy(false, false, i * 24));
+    }
+    for (let i = 0; i < missed; i += 1) {
+      enemies.push(makeEnemy(false, true, i * 16));
+    }
+    if (cfg.boss) enemies.push(makeEnemy(true, false, 60));
+    return enemies;
+  }
+
+  function makeEnemy(boss, saboteur, offset) {
+    const baseHp = boss ? 170 : saboteur ? 38 : 28 + game.round * 9;
+    const evidenceWeakness = boss ? Math.min(.32, game.defenseRoundData.correct * .08) : 0;
+    return {
+      id: Math.random().toString(16).slice(2),
+      boss,
+      saboteur,
+      hp: baseHp * (1 - evidenceWeakness),
+      maxHp: baseHp * (1 - evidenceWeakness),
+      x: saboteur ? 132 + offset : 375 + offset,
+      y: 62 + Math.random() * 70,
+      speed: (boss ? 10 : saboteur ? 23 : 16 + game.round * 2.5) * (1 + game.enemySpeedBonus),
+      damage: boss ? 11 : saboteur ? 6 : 3 + game.round,
+      attackClock: 0,
+      frozen: 0,
+      marked: 0,
+      stunned: 0,
+      dead: false
+    };
+  }
+
+  function updateDefense(dt) {
+    updateEnemies(dt);
+    updateFacilities(dt);
+    updateProjectiles(dt);
+    game.enemies = game.enemies.filter((e) => !e.dead);
+    els.enemyValue.textContent = String(game.enemies.length);
+    if (game.doorHp <= 0) endGame(false);
+    else if (game.enemies.length === 0) finishDefenseRound();
+    renderTop();
+  }
+
+  function updateEnemies(dt) {
+    for (const enemy of game.enemies) {
+      if (enemy.dead) continue;
+      enemy.frozen = Math.max(0, enemy.frozen - dt);
+      enemy.marked = Math.max(0, enemy.marked - dt);
+      enemy.stunned = Math.max(0, enemy.stunned - dt);
+      if (enemy.stunned > 0) continue;
+      if (enemy.x > 63) {
+        const slow = enemy.frozen > 0 ? .3 : 1;
+        enemy.x -= enemy.speed * slow * dt;
+      } else {
+        enemy.attackClock += dt;
+        if (enemy.attackClock >= .82) {
+          enemy.attackClock = 0;
+          game.doorHp = Math.max(0, game.doorHp - enemy.damage);
+          els.battleCanvas.classList.remove('shake');
+          void els.battleCanvas.offsetWidth;
+          els.battleCanvas.classList.add('shake');
+          tone(92, .07, 'square');
+        }
+      }
+    }
+  }
+
+  function updateFacilities(dt) {
+    game.grid.forEach((facility, index) => {
+      if (!facility) return;
+      const key = `${index}-${facility.type}`;
+      game.facilityClocks[key] = (game.facilityClocks[key] || 0) + dt;
+      if (facility.type === 'shelf') {
+        const interval = Math.max(.62, 1.35 - facility.level * .15);
+        if (game.facilityClocks[key] >= interval) {
+          game.facilityClocks[key] = 0;
+          shelfAttack(index, facility);
+        }
+      } else if (facility.type === 'freezer') {
+        const interval = Math.max(2.4, 4.4 - facility.level * .45);
+        if (game.facilityClocks[key] >= interval) {
+          game.facilityClocks[key] = 0;
+          freezerPulse(index, facility);
+        }
+      } else if (facility.type === 'camera') {
+        const interval = Math.max(1.5, 2.9 - facility.level * .25);
+        if (game.facilityClocks[key] >= interval) {
+          game.facilityClocks[key] = 0;
+          cameraMark(facility);
+        }
+      } else if (facility.type === 'generator') {
+        const interval = Math.max(2.6, 5 - facility.level * .45);
+        if (game.facilityClocks[key] >= interval) {
+          game.facilityClocks[key] = 0;
+          generatorChain(index, facility);
+        }
+      }
     });
-    active.forEach(x=>{if(!S.combos.has(x)){S.combos.add(x);say(`✨ 联动激活：${x}！${x==='黄金货道'?'经济开始滚雪球。':x==='锁定激光'?'炮台变成穿透激光。':'冷柜变成全场冻结。'}`,'good',2.2);beep(900,.18,'triangle',.04)}});
-    S.maxIncome=Math.max(S.maxIncome,Math.floor(income)); return {income,dps,freezePower,laser,cold,active};
   }
 
-  function init(){
-    cancelAnimationFrame(raf); S=fresh(); last=performance.now(); E.grid.innerHTML='';
-    for(let i=0;i<9;i++){const b=document.createElement('button');b.type='button';b.className=`store-cell${i===4?' recommended':''}`;b.addEventListener('click',()=>cellClick(i));E.grid.appendChild(b)}
-    E.modal.classList.add('hidden'); document.querySelectorAll('button').forEach(b=>b.disabled=false); E.emergency.disabled=false; select('shelf'); render(); raf=requestAnimationFrame(loop);
+  function shelfAttack(index, facility) {
+    const target = frontEnemy();
+    if (!target) return;
+    const coldAdjacent = adjacentFacilities(index, 'freezer').length > 0;
+    const pierce = game.upgrades.coldChain && coldAdjacent;
+    game.projectiles.push({ x: 55, y: 98, targetId: target.id, speed: 250, damage: 7 + facility.level * 4, slow: coldAdjacent, pierce, dead: false });
+    tone(330, .025, 'square', .025);
   }
 
-  function cellClick(i){
-    if(!S.running)return; const f=S.cells[i];
-    if(f){ if(f.lv>=3)return say(`${DEF[f.type].name}已经满级。`,'good'); const cost=Math.round(DEF[f.type].cost*(.7+f.lv*.45)); if(S.money<cost)return say(`升级需要 ¥${cost}。`,'bad');S.money-=cost;f.lv++;pop(i);say(`${DEF[f.type].name}升到 ${f.lv} 级，能力明显增强。`,'good');beep(800+f.lv*90,.1,'triangle');render();return }
-    const d=DEF[S.selected]; if(S.money<d.cost)return say(`现金不足：${d.name}需要 ¥${d.cost}。`,'bad');
-    S.money-=d.cost;S.cells[i]={type:S.selected,lv:1};pop(i);beep(S.selected==='shelf'?540:680,.08,'triangle');say(`已建造${d.name}。${hint(S.selected)}`,'good');tutorial();render();
-  }
-  const hint=t=>t==='shelf'?'相邻货架会额外增收。':t==='turret'?'它会自动攻击最近的敌人。':t==='freezer'?'它会周期冻结全场。':'把它贴着炮台或冷柜放。';
-  function pop(i){const b=E.grid.children[i];b.classList.remove('hit');void b.offsetWidth;b.classList.add('hit')}
-  function tutorial(){const c=counts();if(S.tutorial===0&&c.shelf){S.tutorial=1;E.coachTitle.textContent='第二步：补一座炮台';E.coachText.textContent='异常顾客快到了。选择“自动炮台”，再放到空格。';select('turret');recommend()}else if(S.tutorial===1&&c.turret){S.tutorial=2;E.coachTitle.textContent='核心抉择已经开始';E.coachText.textContent='继续货架会滚经济，但怪物也在逼近。撑过 90 秒。';[...E.grid.children].forEach(x=>x.classList.remove('recommended'))}}
-  function recommend(){const i=S.cells.findIndex(x=>!x);if(i>=0)E.grid.children[i].classList.add('recommended')}
-  function buff(i,f){const a=neigh(i).map(n=>S.cells[n]).filter(Boolean);if(f.type==='shelf'&&a.some(x=>x.type==='shelf'))return'黄金货道 +50%';if(f.type==='turret'&&a.some(x=>x.type==='camera'))return'锁定激光 · 穿透';if(f.type==='freezer'&&a.some(x=>x.type==='camera'))return'冷链监控 · 全场冻结';if(f.type==='camera'&&a.some(x=>x.type==='turret'))return'强化相邻炮台';if(f.type==='camera'&&a.some(x=>x.type==='freezer'))return'强化相邻冷柜';return''}
-
-  function doorUpgrade(){const cost=40+(S.doorLv-1)*35;if(S.money<cost)return say(`加固门需要 ¥${cost}。`,'bad');S.money-=cost;S.doorLv++;S.hpMax+=30;S.hp=Math.min(S.hpMax,S.hp+45);say(`卷帘门升到 ${S.doorLv} 级，耐久大幅提高。`,'good');beep(430,.12,'square');render()}
-  function emergency(){if(S.emergency||!S.running)return;S.emergency=true;S.frozenUntil=S.t+4;S.enemies.forEach(e=>e.y=Math.max(45,e.y-70));S.fx.push({type:'wave',life:1,max:1});E.emergency.disabled=true;say('⚡ 应急断电：敌人被震退并冻结 4 秒。这里就是自然的广告救场点。','good');beep(180,.35,'sawtooth')}
-
-  function spawn(boss=false){
-    if(boss)S.boss=true; const wave=1+Math.floor(S.t/18),hp=boss?720:40+wave*18+Math.random()*18;
-    S.enemies.push({id:S.nextId++,x:90+Math.random()*720,y:30,hp,max:hp,speed:boss?24:30+wave*4+Math.random()*10,damage:boss?18:4+wave*1.8,atk:0,boss,frozen:0,wobble:Math.random()*6.28});
-    if(boss){say('⚠️ 异常店长出现！现在必须依靠联动、升级或应急断电。','bad');beep(92,.6,'sawtooth')}
+  function freezerPulse(index, facility) {
+    const cameraAdjacent = adjacentFacilities(index, 'camera').length > 0;
+    const duration = 1.1 + facility.level * .25 + (cameraAdjacent ? .45 : 0);
+    game.enemies.forEach((enemy) => { enemy.frozen = Math.max(enemy.frozen, duration); });
+    tone(610, .08, 'sine', .04);
   }
 
-  function update(dt){
-    if(!S.running)return;S.t+=dt;S.spawn+=dt;S.cash+=dt;S.freeze+=dt;S.lock=Math.max(0,S.lock-dt);const st=stats(),left=90-S.t;
-    if(S.cash>=1){S.cash-=1;S.money+=st.income;const card=E.money.closest('.hud-card');card.classList.remove('flash');void card.offsetWidth;card.classList.add('flash');S.cells.forEach((f,i)=>f?.type==='shelf'&&pop(i));beep(880,.025,'sine',.015)}
-    const interval=S.t<10?999:Math.max(4.1,7.2-S.t*.03);if(S.spawn>=interval){S.spawn=0;const n=S.t<30?2:S.t<58?3:4;for(let i=0;i<n;i++)spawn();say(`第 ${1+Math.floor(S.t/18)} 批异常顾客成群出现。`,'bad',1)}
-    if(!S.boss&&S.t>=66)spawn(true);
-    if(st.freezePower){const interval=st.cold?5:Math.max(7,9-st.freezePower);if(S.freeze>=interval){S.freeze=0;const d=st.cold?3.2:1.3+st.freezePower*.35;S.enemies.forEach(e=>e.frozen=Math.max(e.frozen,d));S.fx.push({type:'ice',life:.8,max:.8});say(st.cold?'❄️ 冷链监控触发：全场深度冻结。':'冷柜启动，敌人减速。','good',1.4);beep(320,.15)}}
-    shoot(dt,st);moveEnemies(dt);S.shots.forEach(x=>x.life-=dt);S.shots=S.shots.filter(x=>x.life>0);S.fx.forEach(x=>x.life-=dt);S.fx=S.fx.filter(x=>x.life>0);
-    if(left<=0)finish(true);if(S.hp<=0)finish(false);render(st);
-  }
-  function shoot(dt,st){if(!st.dps||!S.enemies.length)return;const t=S.enemies.reduce((a,b)=>!a||b.y>a.y?b:a,null);t.hp-=st.dps*dt;if(Math.random()<dt*(4+st.laser*2)){S.shots.push({x1:450+(Math.random()-.5)*210,y1:390,x2:t.x,y2:t.y,life:.11,laser:st.laser>0});beep(st.laser?1040:620,.025,'square',.012)}if(st.laser&&Math.random()<dt*1.7)S.enemies.filter(e=>e!==t&&Math.abs(e.y-t.y)<75).slice(0,2).forEach(e=>e.hp-=st.dps*dt*.35)}
-  function moveEnemies(dt){
-    const global=S.t<S.frozenUntil;for(const e of S.enemies){if(e.hp<=0)continue;e.frozen=Math.max(0,e.frozen-dt);const slow=global?0:e.frozen>0?.28:1;if(e.y<342){e.y+=e.speed*slow*dt;e.wobble+=dt*5}else{e.atk+=dt;if(e.atk>=(e.boss?.65:1.05)){e.atk=0;S.hp-=e.damage/(1+(S.doorLv-1)*.22);E.c.classList.remove('shake');void E.c.offsetWidth;E.c.classList.add('shake');if(S.hp<S.hpMax*.35)say('卷帘门进入红线！下一次收入能否赶上加固？','bad',1.2);beep(110,.07,'sawtooth',.035)}}}
-    const dead=S.enemies.filter(e=>e.hp<=0);dead.forEach(e=>{S.kills++;S.money+=e.boss?55:4;S.fx.push({type:'burst',x:e.x,y:e.y,life:.55,max:.55});if(e.boss)say('💥 异常店长被击退！你建立的系统开始反过来碾压敌人。','good',3)});S.enemies=S.enemies.filter(e=>e.hp>0)
+  function cameraMark(facility) {
+    const target = frontEnemy();
+    if (!target) return;
+    target.marked = 2.4 + facility.level * .3;
   }
 
-  function render(pre){const st=pre||stats(),left=Math.max(0,Math.ceil(90-S.t)),pct=Math.max(0,Math.min(100,S.hp/S.hpMax*100));E.hp.textContent=Math.ceil(pct);E.hpBar.style.width=pct+'%';E.hpBar.style.background=pct<35?'var(--danger)':pct<65?'var(--warning)':'var(--accent)';E.money.textContent=Math.floor(S.money);E.income.textContent=Math.floor(st.income);E.time.textContent=left;E.wave.textContent=S.t<10?`第一批异常顾客 ${Math.max(1,Math.ceil(10-S.t))} 秒后出现`:S.t<66?`第 ${1+Math.floor((S.t-10)/18)} 波 · 敌人持续增强`:'Boss 夜班 · 撑到天亮';
-    const close=S.enemies.reduce((m,e)=>Math.max(m,e.y),0),th=S.hp<S.hpMax*.35||close>315?'极高':close>250||S.enemies.length>7?'高':S.enemies.length>2?'中':'低';E.threat.textContent=th;E.threat.style.color=th==='高'||th==='极高'?'var(--danger)':th==='中'?'var(--warning)':'var(--accent)';E.doorState.textContent=pct<35?'门快破了！':pct<70?'正在承压':'安全';E.doorState.style.color=pct<35?'var(--danger)':pct<70?'var(--warning)':'var(--accent)';
-    const doorCost=40+(S.doorLv-1)*35;E.doorBtn.textContent=`加固门 ¥${doorCost}`;E.doorBtn.disabled=!S.running||S.money<doorCost;document.querySelectorAll('.build-card').forEach(b=>b.disabled=!S.running||S.money<DEF[b.dataset.build].cost);
-    E.combo.classList.toggle('active',st.active.size>0);E.combo.textContent=st.active.size?`联动：${[...st.active].join(' · ')}`:'把监控贴着炮台或冷柜放置';
-    S.cells.forEach((f,i)=>{const b=E.grid.children[i];b.classList.toggle('occupied',!!f);if(!f){b.innerHTML='';return}const d=DEF[f.type],u=f.lv<3?Math.round(d.cost*(.7+f.lv*.45)):0,x=buff(i,f);b.innerHTML=`<div class="facility"><span class="level-pips">${'★'.repeat(f.lv)}</span><span class="facility-icon">${d.icon}</span><span class="facility-name">${d.name} Lv.${f.lv}</span><span class="facility-meta">${f.lv<3?`点击升级 ¥${u}`:'已满级'}</span>${x?`<span class="facility-buff">${x}</span>`:''}</div>`});
+  function generatorChain(index, facility) {
+    const cameraAdjacent = adjacentFacilities(index, 'camera').length > 0;
+    const targets = [...game.enemies].filter((e) => !e.dead).sort((a, b) => a.x - b.x).slice(0, 3);
+    targets.forEach((enemy) => {
+      let damage = 8 + facility.level * 4;
+      if (cameraAdjacent && game.upgrades.nightGrid && enemy.marked > 0) {
+        damage *= 1.8;
+        enemy.stunned = Math.max(enemy.stunned, .55);
+      }
+      damageEnemy(enemy, damage);
+    });
+    tone(760, .06, 'sawtooth', .04);
   }
 
-  function draw(){const w=E.c.width,h=E.c.height;ctx.clearRect(0,0,w,h);const g=ctx.createLinearGradient(0,0,0,h);g.addColorStop(0,'#101827');g.addColorStop(1,'#0a0f17');ctx.fillStyle=g;ctx.fillRect(0,0,w,h);ctx.fillStyle='#182231';ctx.fillRect(48,78,w-96,278);ctx.strokeStyle='#2f3d52';ctx.lineWidth=2;ctx.setLineDash([20,18]);ctx.beginPath();ctx.moveTo(w/2,85);ctx.lineTo(w/2,350);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle='#263348';ctx.fillRect(0,354,w,66);for(let x=28;x<w;x+=58){ctx.fillStyle='#5a6b82';ctx.fillRect(x,377,34,4)}S.enemies.forEach(drawEnemy);S.shots.forEach(drawShot);S.fx.forEach(drawFx);drawDefense(stats())}
-  function drawEnemy(e){const frozen=e.frozen>0||S.t<S.frozenUntil,scale=e.boss?1.75:1.08;ctx.save();ctx.translate(e.x+Math.sin(e.wobble)*2,e.y);ctx.scale(scale,scale);if(frozen){ctx.fillStyle='#62a9ff55';ctx.beginPath();ctx.arc(0,0,38,0,6.28);ctx.fill()}ctx.font=`${e.boss?58:44}px system-ui`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(e.boss?'👹':'👤',0,0);ctx.restore();const bw=e.boss?120:66,r=Math.max(0,e.hp/e.max),y=e.y-(e.boss?66:40);ctx.fillStyle='#2b3547';ctx.fillRect(e.x-bw/2,y,bw,5);ctx.fillStyle=e.boss?'#ff626f':'#ffca57';ctx.fillRect(e.x-bw/2,y,bw*r,5);if(e.boss){ctx.fillStyle='#ffabb1';ctx.font='bold 15px system-ui';ctx.textAlign='center';ctx.fillText('异常店长',e.x,e.y-78)}}
-  function drawShot(s){ctx.save();ctx.globalAlpha=Math.min(1,s.life*9);ctx.strokeStyle=s.laser?'#b495ff':'#ffca57';ctx.lineWidth=s.laser?8:4;ctx.beginPath();ctx.moveTo(s.x1,s.y1);ctx.lineTo(s.x2,s.y2);ctx.stroke();ctx.restore()}
-  function drawFx(p){const q=1-p.life/p.max;ctx.save();if(p.type==='burst'){ctx.globalAlpha=1-q;ctx.strokeStyle='#ffca57';ctx.lineWidth=5;ctx.beginPath();ctx.arc(p.x,p.y,12+q*34,0,6.28);ctx.stroke()}else if(p.type==='ice'){ctx.globalAlpha=.25*(1-q);ctx.fillStyle='#62a9ff';ctx.fillRect(0,0,E.c.width,E.c.height)}else{ctx.globalAlpha=.35*(1-q);ctx.strokeStyle='#ffca57';ctx.lineWidth=10;ctx.beginPath();ctx.arc(450,350,40+q*500,Math.PI,6.28);ctx.stroke()}ctx.restore()}
-  function drawDefense(st){const c=counts(),a=[];for(let i=0;i<c.turret;i++)a.push(st.laser>i?'🟣':'🔫');for(let i=0;i<c.freezer;i++)a.push('❄️');ctx.font='34px system-ui';ctx.textAlign='center';a.forEach((x,i)=>ctx.fillText(x,450-Math.max(1,a.length-1)*26+i*52,396))}
+  function updateProjectiles(dt) {
+    for (const projectile of game.projectiles) {
+      if (projectile.dead) continue;
+      const target = game.enemies.find((e) => e.id === projectile.targetId && !e.dead) || frontEnemy();
+      if (!target) { projectile.dead = true; continue; }
+      const dx = target.x - projectile.x;
+      projectile.x += Math.sign(dx) * projectile.speed * dt;
+      projectile.y += (target.y - projectile.y) * Math.min(1, dt * 8);
+      if (Math.abs(projectile.x - target.x) < 12) {
+        damageEnemy(target, projectile.damage);
+        if (projectile.slow) target.frozen = Math.max(target.frozen, .9);
+        if (projectile.pierce) {
+          const next = [...game.enemies].filter((e) => !e.dead && e.id !== target.id).sort((a, b) => a.x - b.x)[0];
+          if (next) {
+            damageEnemy(next, projectile.damage * .55);
+            next.frozen = Math.max(next.frozen, .6);
+          }
+        }
+        projectile.dead = true;
+      }
+    }
+    game.projectiles = game.projectiles.filter((p) => !p.dead);
+  }
 
-  function loop(now){const dt=Math.min(.05,(now-last)/1000);last=now;update(dt);draw();raf=requestAnimationFrame(loop)}
-  function finish(win){if(!S.running)return;S.running=false;document.querySelectorAll('button').forEach(b=>{if(!['resultRetry','restartButton','soundToggle'].includes(b.id))b.disabled=true});E.resultTitle.textContent=win?'天亮了，便利店守住了':'卷帘门被撞开了';E.resultText.textContent=win?'你完成了“贪经济—承压—构筑联动—反杀”的循环。':'失败原因应该清楚：经济贪太久、防线不足、没有联动，或救场太迟。';E.resultIncome.textContent=S.maxIncome;E.resultKills.textContent=S.kills;E.resultCombos.textContent=S.combos.size;E.modal.classList.remove('hidden');beep(win?660:120,.6,win?'triangle':'sawtooth')}
+  function damageEnemy(enemy, amount) {
+    const multiplier = enemy.marked > 0 ? 1.58 : 1;
+    enemy.hp -= amount * multiplier;
+    if (enemy.hp <= 0 && !enemy.dead) {
+      enemy.dead = true;
+      game.totals.kills += 1;
+      game.money += enemy.boss ? 40 : 4;
+      tone(enemy.boss ? 120 : 220, enemy.boss ? .22 : .05, 'triangle', .05);
+    }
+  }
 
-  document.querySelectorAll('.build-card').forEach(b=>b.addEventListener('click',()=>select(b.dataset.build)));E.doorBtn.addEventListener('click',doorUpgrade);E.emergency.addEventListener('click',emergency);E.restart.addEventListener('click',init);E.retry.addEventListener('click',init);E.sound.addEventListener('click',()=>{soundOn=!soundOn;E.sound.textContent=soundOn?'🔊':'🔇'});init();
+  function finishDefenseRound() {
+    if (game.round >= ROUND_CONFIG.length - 1) {
+      endGame(true);
+      return;
+    }
+    game.businessPaused = true;
+    game.phase = 'intermission';
+    game.money += 18 + game.round * 8;
+    setCoach('🧰', '撑住了，选择一项永久改装', '不是单纯加数值：有些改装会改变联动方式，有些会交换收益与风险。');
+    showUpgradeChoices();
+    renderAll();
+  }
+
+  function showUpgradeChoices() {
+    const available = UPGRADE_POOL.filter((u) => !game.chosenUpgrades.includes(u.id));
+    const choices = shuffle([...available]).slice(0, 3);
+    els.upgradeChoices.innerHTML = '';
+    choices.forEach((upgrade) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'upgrade-card';
+      button.innerHTML = `<strong>${upgrade.title}</strong><p>${upgrade.desc}</p>${upgrade.risk ? `<span class="risk">${upgrade.risk}</span>` : ''}`;
+      button.addEventListener('click', () => {
+        upgrade.apply(game);
+        game.chosenUpgrades.push(upgrade.id);
+        els.upgradeModal.classList.add('hidden');
+        game.businessPaused = false;
+        startBusinessRound(game.round + 1);
+        tone(680, .1, 'triangle', .05);
+      }, { once: true });
+      els.upgradeChoices.appendChild(button);
+    });
+    els.upgradeModal.classList.remove('hidden');
+  }
+
+  function endGame(win) {
+    game.ended = true;
+    game.businessPaused = true;
+    els.resultTitle.textContent = win ? '你守到了天亮' : '卷帘门被突破';
+    els.resultText.textContent = win
+      ? `你没有只靠堆炮台，而是用盘查结果削弱异常、用设施双状态建立防线。完成了 ${game.perfectChecks} 次完美盘查。`
+      : `本局漏入 ${game.totals.missed} 名异常。观察失败、过度贪经济或设施联动不足，都会直接反映在门前压力上。`;
+    els.resultCorrect.textContent = String(game.totals.correct);
+    els.resultFalse.textContent = String(game.totals.false);
+    els.resultKills.textContent = String(game.totals.kills);
+    els.resultModal.classList.remove('hidden');
+    tone(win ? 660 : 90, .35, win ? 'triangle' : 'sawtooth', .08);
+  }
+
+  function renderAll() {
+    renderTop();
+    renderVisitors();
+    renderGrid();
+    renderBuildButtons();
+    updateForecast();
+  }
+
+  function renderTop() {
+    els.doorValue.textContent = String(Math.ceil(game.doorHp));
+    els.doorMaxValue.textContent = String(game.doorMax);
+    els.doorBar.style.width = `${Math.max(0, (game.doorHp / game.doorMax) * 100)}%`;
+    els.moneyValue.textContent = String(Math.floor(game.money));
+    els.repValue.textContent = String(Math.round(game.reputation));
+    els.evidenceValue.textContent = String(Math.floor(game.evidence));
+    els.evidenceBar.style.width = `${game.evidence}%`;
+    document.querySelector('.phone').dataset.phase = game.phase;
+    els.roundValue.textContent = String(game.round + 1);
+    els.phaseText.textContent = game.phase === 'business' ? '营业中' : game.phase === 'defense' ? '熄灯防御' : '改装中';
+    const rule = RULES[game.round];
+    els.ruleTitle.textContent = rule.title;
+    els.ruleHint.textContent = rule.hint;
+    const denominator = Math.max(1, ROUND_CONFIG[game.round].baseEnemies + (game.defenseRoundData?.missed || 0) + (ROUND_CONFIG[game.round].boss ? 1 : 0));
+    const timerPercent = game.phase === 'business' ? (game.timer / game.timerMax) * 100 : game.phase === 'defense' ? Math.max(0, Math.min(100, (game.enemies.length / denominator) * 100)) : 0;
+    els.roundTimerBar.style.width = `${timerPercent}%`;
+    els.protocolButton.disabled = game.phase !== 'defense' || game.evidence < 100 || game.protocolUsedThisDefense;
+    els.protocolButton.classList.toggle('ready', !els.protocolButton.disabled);
+    els.closeEarlyButton.disabled = game.phase !== 'business' || game.visitors.filter((v) => v.arrived).length === 0;
+    els.closeButtonHint.textContent = game.phase === 'business'
+      ? `还剩 ${Math.ceil(game.timer)} 秒 · 越早关门越安全`
+      : '防御阶段无法继续营业';
+    els.doorUpgradeButton.disabled = game.phase === 'defense' || game.money < doorUpgradeCost();
+    els.doorUpgradeButton.textContent = `门体升级 ¥${doorUpgradeCost()}`;
+    els.battleHint.textContent = game.phase === 'business' ? '熄灯后，设施会切换成防御模式' : game.phase === 'defense' ? '同一设施已改变用途，正在自动防守' : '选择改装后进入下一轮';
+    els.enemyValue.textContent = String(game.enemies.length);
+  }
+
+  function renderVisitors() {
+    els.visitorLane.innerHTML = '';
+    const cfg = ROUND_CONFIG[game.round];
+    els.visitorTotalValue.textContent = String(cfg.visitors);
+    els.arrivedValue.textContent = String(game.visitors.filter((v) => v.arrived).length);
+    for (let i = 0; i < cfg.visitors; i += 1) {
+      const visitor = game.visitors[i];
+      if (!visitor || !visitor.arrived) {
+        const placeholder = document.createElement('div');
+        placeholder.className = 'visitor-placeholder';
+        placeholder.textContent = '…';
+        els.visitorLane.appendChild(placeholder);
+        continue;
+      }
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `visitor arrive${visitor.rejected ? ' rejected' : ''}${visitor.cameraHint ? ' camera-hint' : ''}`;
+      button.innerHTML = `
+        <span class="person">${visitor.face}</span>
+        <span class="name">${visitor.name}</span>
+        <span class="traits">${visibleTraitChips(visitor.traits).map((chip) => `<span class="trait ${chip.relevant ? 'relevant' : 'muted-trait'}">${chip.text}</span>`).join('')}</span>
+        <span class="decision">${visitor.rejected ? '拒绝入店' : '放行结账'}</span>`;
+      button.addEventListener('click', () => {
+        if (game.phase !== 'business') return;
+        visitor.rejected = !visitor.rejected;
+        tone(visitor.rejected ? 250 : 460, .04, 'square', .025);
+        renderVisitors();
+        updateForecast();
+      });
+      els.visitorLane.appendChild(button);
+    }
+  }
+
+  function visibleTraitChips(t) {
+    const fields = new Set(RULES[game.round].fields);
+    return [
+      { field: 'shadow', text: t.shadow ? '👤有影' : '◌无影' },
+      { field: 'cold', text: t.cold ? '🥶冰冷' : '🌡常温' },
+      { field: 'umbrella', text: t.umbrella === 'red' ? '☂️红伞' : t.umbrella === 'blue' ? '🌂蓝伞' : '✋无伞' },
+      { field: 'footprints', text: t.footprints === 'reverse' ? '↩反脚印' : '→正常步' }
+    ].map((chip) => ({ ...chip, relevant: fields.has(chip.field) }));
+  }
+
+  function updateForecast() {
+    if (!game) return;
+    const value = game.visitors.filter((v) => v.arrived && !v.anomaly && !v.rejected).reduce((sum, v) => sum + visitorPayout(v), 0);
+    els.forecastValue.textContent = String(value);
+  }
+
+  function renderGrid() {
+    els.storeGrid.innerHTML = '';
+    game.grid.forEach((facility, index) => {
+      const cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = `store-cell${facility ? '' : ' empty'}${!facility && game.phase !== 'defense' ? ' can-place' : ''}${cellHasSynergy(index) ? ' synergy' : ''}`;
+      if (facility) {
+        const def = FACILITIES[facility.type];
+        const modeText = game.phase === 'defense' ? def.night(facility.level) : def.day(facility.level);
+        cell.innerHTML = `
+          <span class="facility">
+            <span class="facility-icon">${def.icon}</span>
+            <span class="facility-info"><strong>${def.name}</strong><small>${modeText}</small></span>
+          </span>
+          <span class="facility-level">Lv.${facility.level}</span>
+          <span class="mode-badge ${game.phase === 'defense' ? 'night' : ''}">${game.phase === 'defense' ? '防御用途' : '营业用途'}</span>`;
+      }
+      cell.addEventListener('click', () => handleGridClick(index));
+      els.storeGrid.appendChild(cell);
+    });
+    renderSynergies();
+  }
+
+  function handleGridClick(index) {
+    if (game.phase === 'defense' || game.phase === 'intermission') return;
+    const facility = game.grid[index];
+    if (!facility) {
+      const def = FACILITIES[game.selectedBuild];
+      if (game.money < def.cost) {
+        setCoach('💸', '现金不够', `建造${def.name}需要¥${def.cost}。继续营业，或用现有设施撑过本轮。`);
+        tone(110, .06, 'square', .03);
+        return;
+      }
+      game.money -= def.cost;
+      game.grid[index] = { type: game.selectedBuild, level: 1 };
+      setCoach('🧩', `已建造${def.name}`, `营业用途：${def.day(1)}；熄灯用途：${def.night(1)}。`);
+      tone(580, .08, 'triangle', .04);
+    } else {
+      const cost = facilityUpgradeCost(facility);
+      if (game.money < cost) {
+        setCoach('💸', '升级现金不足', `升级${FACILITIES[facility.type].name}需要¥${cost}。`);
+        return;
+      }
+      game.money -= cost;
+      facility.level += 1;
+      setCoach('⬆️', `${FACILITIES[facility.type].name}升到 Lv.${facility.level}`, '升级会同时强化营业和防御两个用途。');
+      tone(720, .08, 'triangle', .04);
+    }
+    renderAll();
+  }
+
+  function renderBuildButtons() {
+    $$('.build-button').forEach((button) => {
+      const type = button.dataset.build;
+      button.classList.toggle('selected', type === game.selectedBuild);
+      button.disabled = game.phase === 'defense' || game.phase === 'intermission';
+    });
+  }
+
+  function renderSynergies() {
+    const messages = [];
+    if (hasGoldenAisle()) messages.push('黄金动线：同排双货架，营业收入×1.25');
+    if (hasAdjacentPair('shelf', 'freezer')) messages.push(game.upgrades.coldChain ? '冷链弹仓：罐头穿透并减速' : '冷链陈列：冷饮顾客收益提高');
+    if (hasAdjacentPair('camera', 'generator')) messages.push(game.upgrades.nightGrid ? '夜视电网：链电标记目标并眩晕' : '夜间供电：证据充能更快');
+    els.synergyStrip.textContent = messages.length ? messages.join(' · ') : '尚未形成跨模式联动：尝试让设施相邻或同排';
+    els.synergyStrip.classList.toggle('active', messages.length > 0);
+  }
+
+  function cellHasSynergy(index) {
+    const facility = game.grid[index];
+    if (!facility) return false;
+    if (facility.type === 'shelf' && (adjacentFacilities(index, 'freezer').length || rowHasTwoShelves(Math.floor(index / 3)))) return true;
+    if (facility.type === 'freezer' && adjacentFacilities(index, 'shelf').length) return true;
+    if (facility.type === 'camera' && adjacentFacilities(index, 'generator').length) return true;
+    if (facility.type === 'generator' && adjacentFacilities(index, 'camera').length) return true;
+    return false;
+  }
+
+  function adjacentIndices(index) {
+    const row = Math.floor(index / 3);
+    const col = index % 3;
+    return [[row - 1, col], [row + 1, col], [row, col - 1], [row, col + 1]]
+      .filter(([r, c]) => r >= 0 && r < 3 && c >= 0 && c < 3)
+      .map(([r, c]) => r * 3 + c);
+  }
+
+  function adjacentFacilities(index, type) {
+    return adjacentIndices(index).map((i) => game.grid[i]).filter((f) => f && f.type === type);
+  }
+
+  function hasAdjacentPair(a, b) {
+    return game.grid.some((facility, index) => facility && facility.type === a && adjacentFacilities(index, b).length > 0);
+  }
+
+  function rowHasTwoShelves(row) {
+    return game.grid.slice(row * 3, row * 3 + 3).filter((f) => f?.type === 'shelf').length >= 2;
+  }
+
+  function hasGoldenAisle() {
+    return [0, 1, 2].some(rowHasTwoShelves);
+  }
+
+  function totalFacilityLevels(type) {
+    return game.grid.reduce((sum, facility) => sum + (facility?.type === type ? facility.level : 0), 0);
+  }
+
+  function facilityUpgradeCost(facility) {
+    return Math.round(FACILITIES[facility.type].cost * (.65 + facility.level * .55));
+  }
+
+  function doorUpgradeCost() {
+    const levels = Math.round((game.doorMax - 100) / 25);
+    return 45 + levels * 25;
+  }
+
+  function frontEnemy() {
+    return [...game.enemies].filter((e) => !e.dead).sort((a, b) => a.x - b.x)[0] || null;
+  }
+
+  function useProtocol() {
+    if (game.phase !== 'defense' || game.evidence < 100 || game.protocolUsedThisDefense) return;
+    game.protocolUsedThisDefense = true;
+    game.evidence = 0;
+    game.enemies.forEach((enemy) => {
+      enemy.x += 55;
+      enemy.stunned = Math.max(enemy.stunned, 2.2);
+      damageEnemy(enemy, enemy.boss ? 42 : 30);
+    });
+    game.doorHp = Math.min(game.doorMax, game.doorHp + 18);
+    if (game.upgrades.protocolRefund) game.money += 24;
+    setCoach('⚡', '封店协议启动', '正确盘查积累的证据，终于在防守阶段变成一次可见的翻盘。');
+    tone(850, .24, 'sawtooth', .08);
+    renderAll();
+  }
+
+  function upgradeDoor() {
+    if (game.phase === 'defense') return;
+    const cost = doorUpgradeCost();
+    if (game.money < cost) return;
+    game.money -= cost;
+    game.doorMax += 25;
+    game.doorHp = Math.min(game.doorMax, game.doorHp + 25);
+    setCoach('🚪', '卷帘门完成升级', '防守更稳，但这笔钱没有投入经济与设施。你在为安全买单。');
+    tone(430, .09, 'triangle', .04);
+    renderAll();
+  }
+
+  function drawBattle(time) {
+    const w = els.battleCanvas.width;
+    const h = els.battleCanvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const night = game?.phase === 'defense';
+    const gradient = ctx.createLinearGradient(0, 0, w, h);
+    gradient.addColorStop(0, night ? '#080a11' : '#141827');
+    gradient.addColorStop(1, night ? '#101627' : '#21283a');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.fillStyle = night ? '#1d2433' : '#2b3446';
+    ctx.fillRect(0, 128, w, 42);
+    ctx.strokeStyle = '#424c5d';
+    ctx.setLineDash([12, 12]);
+    ctx.beginPath();
+    ctx.moveTo(0, 148);
+    ctx.lineTo(w, 148);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = '#111722';
+    ctx.fillRect(7, 32, 58, 106);
+    ctx.fillStyle = game && game.doorHp / game.doorMax < .35 ? '#7d2433' : '#344258';
+    ctx.fillRect(43, 57, 22, 77);
+    ctx.fillStyle = '#d9e2ef';
+    ctx.font = '10px system-ui';
+    ctx.fillText('便利店', 12, 49);
+
+    if (!game) return;
+
+    game.projectiles.forEach((p) => {
+      ctx.fillStyle = '#ffd166';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    game.enemies.forEach((enemy) => {
+      const pulse = Math.sin(time * 7 + enemy.y) * 1.5;
+      const size = enemy.boss ? 20 : enemy.saboteur ? 13 : 11;
+      ctx.save();
+      ctx.translate(enemy.x, enemy.y + pulse);
+      if (enemy.marked > 0) {
+        ctx.strokeStyle = '#63c7ff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, size + 6, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      if (enemy.frozen > 0) ctx.globalAlpha = .65;
+      ctx.fillStyle = enemy.boss ? '#b58cff' : enemy.saboteur ? '#ff667d' : '#df4f68';
+      ctx.beginPath();
+      ctx.arc(0, 0, size, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#0a0c12';
+      ctx.beginPath();
+      ctx.arc(-4, -2, 2, 0, Math.PI * 2);
+      ctx.arc(4, -2, 2, 0, Math.PI * 2);
+      ctx.fill();
+      if (enemy.boss) {
+        ctx.fillStyle = '#f2eaff';
+        ctx.font = '9px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText('无面店长', 0, -27);
+      }
+      const hpWidth = enemy.boss ? 45 : 24;
+      ctx.fillStyle = '#242a37';
+      ctx.fillRect(-hpWidth / 2, size + 5, hpWidth, 4);
+      ctx.fillStyle = enemy.frozen > 0 ? '#63c7ff' : '#82f2ba';
+      ctx.fillRect(-hpWidth / 2, size + 5, hpWidth * Math.max(0, enemy.hp / enemy.maxHp), 4);
+      ctx.restore();
+    });
+
+    if (game.phase === 'business') {
+      ctx.fillStyle = 'rgba(255,255,255,.55)';
+      ctx.font = '12px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText('营业中：门外暂时平静', 220, 88);
+      ctx.fillStyle = 'rgba(130,242,186,.12)';
+      ctx.fillRect(84, 44, 270, 58);
+    }
+  }
+
+  function setCoach(icon, title, text) {
+    els.coachIcon.textContent = icon;
+    els.coachTitle.textContent = title;
+    els.coachText.textContent = text;
+  }
+
+  function shuffle(items) {
+    for (let i = items.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [items[i], items[j]] = [items[j], items[i]];
+    }
+    return items;
+  }
+
+  function tone(frequency, duration, type = 'sine', volume = .035) {
+    if (!soundEnabled) return;
+    try {
+      audioContext ||= new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      oscillator.type = type;
+      oscillator.frequency.value = frequency;
+      gain.gain.setValueAtTime(volume, audioContext.currentTime);
+      gain.gain.exponentialRampToValueAtTime(.0001, audioContext.currentTime + duration);
+      oscillator.connect(gain).connect(audioContext.destination);
+      oscillator.start();
+      oscillator.stop(audioContext.currentTime + duration);
+    } catch (_) {
+      // Audio is optional in the graybox.
+    }
+  }
+
+  $$('.build-button').forEach((button) => {
+    button.addEventListener('click', () => {
+      game.selectedBuild = button.dataset.build;
+      renderBuildButtons();
+      const def = FACILITIES[game.selectedBuild];
+      setCoach(def.icon, `已选择${def.name}`, `点空格建造。营业：${def.day(1)}；熄灯：${def.night(1)}。`);
+    });
+  });
+
+  els.closeEarlyButton.addEventListener('click', () => closeStore(true));
+  els.protocolButton.addEventListener('click', useProtocol);
+  els.doorUpgradeButton.addEventListener('click', upgradeDoor);
+  els.restartButton.addEventListener('click', startGame);
+  els.resultRetryButton.addEventListener('click', startGame);
+  els.soundButton.addEventListener('click', () => {
+    soundEnabled = !soundEnabled;
+    els.soundButton.textContent = soundEnabled ? '🔊' : '🔇';
+  });
+
+  window.__gameDebug = {
+    getState: () => game,
+    closeStore: () => closeStore(true),
+    useProtocol,
+    restart: startGame
+  };
+
+  startGame();
 })();
