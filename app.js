@@ -1,373 +1,94 @@
 (() => {
-  const stage = document.querySelector('#gameStage');
-  const tabs = [...document.querySelectorAll('.tab')];
-  const modal = document.querySelector('#resultModal');
-  const retryButton = document.querySelector('#retryButton');
-  const nextGameButton = document.querySelector('#nextGameButton');
-  const soundToggle = document.querySelector('#soundToggle');
-  let currentGame = 'elevator';
-  let cleanup = () => {};
-  let soundOn = true;
-  let audioCtx = null;
+  'use strict';
+  const $ = s => document.querySelector(s);
+  const E = {
+    c: $('#battleCanvas'), hp: $('#doorHp'), hpBar: $('#doorBar'), money: $('#money'), income: $('#income'), time: $('#timeLeft'), wave: $('#waveLabel'),
+    threat: $('#threat'), doorState: $('#doorStatus'), doorBtn: $('#upgradeDoor'), grid: $('#storeGrid'), combo: $('#comboBadge'), coachTitle: $('#coachTitle'),
+    coachText: $('#coachText'), emergency: $('#emergencyButton'), restart: $('#restartButton'), status: $('#statusLine'), sound: $('#soundToggle'), modal: $('#resultModal'),
+    resultTitle: $('#resultTitle'), resultText: $('#resultText'), resultIncome: $('#resultIncome'), resultKills: $('#resultKills'), resultCombos: $('#resultCombos'), retry: $('#resultRetry')
+  };
+  const ctx = E.c.getContext('2d');
+  const DEF = {
+    shelf: { name: '货架', icon: '🛒', cost: 20 }, turret: { name: '炮台', icon: '🔫', cost: 30 },
+    freezer: { name: '冷柜', icon: '❄️', cost: 35 }, camera: { name: '监控', icon: '📹', cost: 40 }
+  };
+  let S, raf, last = performance.now(), audio, soundOn = true;
 
-  function beep(freq = 440, duration = .07, type = 'sine', gain = .035) {
-    if (!soundOn) return;
-    try {
-      audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
-      const osc = audioCtx.createOscillator();
-      const g = audioCtx.createGain();
-      osc.type = type;
-      osc.frequency.value = freq;
-      g.gain.value = gain;
-      osc.connect(g).connect(audioCtx.destination);
-      osc.start();
-      g.gain.exponentialRampToValueAtTime(.0001, audioCtx.currentTime + duration);
-      osc.stop(audioCtx.currentTime + duration);
-    } catch (_) {}
-  }
+  const fresh = () => ({ running:true, t:0, money:60, hp:100, hpMax:100, doorLv:1, selected:'shelf', cells:Array(9).fill(null), enemies:[], shots:[], fx:[], spawn:0, cash:0, freeze:0, emergency:false, frozenUntil:0, kills:0, maxIncome:1, combos:new Set(), tutorial:0, boss:false, lock:0, nextId:1 });
+  const neigh = i => { const r=Math.floor(i/3),c=i%3,o=[]; [[-1,0],[1,0],[0,-1],[0,1]].forEach(([a,b])=>{const y=r+a,x=c+b;if(y>=0&&y<3&&x>=0&&x<3)o.push(y*3+x)});return o; };
+  const counts = () => S.cells.reduce((a,v)=>(v&&(a[v.type]++),a),{shelf:0,turret:0,freezer:0,camera:0});
+  const beep = (f,d=.06,type='sine',v=.025) => { if(!soundOn)return; try{audio ||= new (AudioContext||webkitAudioContext)();const o=audio.createOscillator(),g=audio.createGain();o.frequency.value=f;o.type=type;g.gain.setValueAtTime(v,audio.currentTime);g.gain.exponentialRampToValueAtTime(.0001,audio.currentTime+d);o.connect(g).connect(audio.destination);o.start();o.stop(audio.currentTime+d)}catch{} };
+  const say = (m,k='',lock=0) => { if(S.lock>0&&k!=='bad')return;E.status.textContent=m;E.status.className=`status-line${k?' '+k:''}`;S.lock=Math.max(S.lock,lock); };
+  const select = type => { S.selected=type; document.querySelectorAll('.build-card').forEach(b=>b.classList.toggle('selected',b.dataset.build===type)); };
 
-  function bind(root, key) { return root.querySelector(`[data-bind="${key}"]`); }
-  function status(root, text, kind = '') {
-    const el = bind(root, 'status');
-    el.textContent = text;
-    el.className = `status-line ${kind}`.trim();
-  }
-  function animate(el, cls) {
-    if (!el) return;
-    el.classList.remove(cls);
-    void el.offsetWidth;
-    el.classList.add(cls);
-  }
-  function randomPick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
-  function cloneTemplate(id) {
-    const fragment = document.querySelector(`#${id}`).content.cloneNode(true);
-    stage.replaceChildren(fragment);
-    return stage.firstElementChild;
-  }
-  function setTab(game) {
-    tabs.forEach(tab => tab.classList.toggle('active', tab.dataset.game === game));
-  }
-  function showResult(title, summary, metrics) {
-    document.querySelector('#resultTitle').textContent = title;
-    document.querySelector('#resultSummary').textContent = summary;
-    const container = document.querySelector('#resultMetrics');
-    container.innerHTML = metrics.map(m => `<div><span>${m.label}</span><strong>${m.value}</strong></div>`).join('');
-    modal.classList.remove('hidden');
-  }
-  function closeResult() { modal.classList.add('hidden'); }
-  function mount(game) {
-    cleanup();
-    closeResult();
-    currentGame = game;
-    setTab(game);
-    cleanup = game === 'elevator' ? mountElevator() : game === 'baggage' ? mountBaggage() : mountFire();
-  }
-
-  tabs.forEach(tab => tab.addEventListener('click', () => mount(tab.dataset.game)));
-  retryButton.addEventListener('click', () => mount(currentGame));
-  nextGameButton.addEventListener('click', () => {
-    const order = ['elevator', 'baggage', 'fire'];
-    mount(order[(order.indexOf(currentGame) + 1) % order.length]);
-  });
-  soundToggle.addEventListener('click', () => {
-    soundOn = !soundOn;
-    soundToggle.textContent = soundOn ? '🔊' : '🔇';
-  });
-
-  function mountElevator() {
-    const root = cloneTemplate('elevatorTemplate');
-    const state = {
-      score: 0, combo: 0, time: 60, rescue: 1, selected: null, nextId: 1,
-      queue: [], loads: { odd: [], even: [] }, ended: false
-    };
-    const intervals = [];
-    const oddCar = root.querySelector('[data-elevator="odd"]');
-    const evenCar = root.querySelector('[data-elevator="even"]');
-
-    function createPassenger() {
-      if (state.queue.length >= 12 || state.ended) return;
-      state.queue.push({ id: state.nextId++, floor: 2 + Math.floor(Math.random() * 5), patience: 100, vip: Math.random() < .14 });
-      render();
-    }
-    function render() {
-      bind(root, 'score').textContent = state.score;
-      bind(root, 'combo').textContent = state.combo;
-      bind(root, 'time').textContent = state.time;
-      const q = bind(root, 'queue');
-      q.innerHTML = state.queue.map(p => `
-        <button class="passenger ${state.selected === p.id ? 'selected' : ''} ${p.patience < 35 ? 'urgent' : ''}" data-passenger="${p.id}" type="button">
-          <span class="avatar">${p.vip ? '👑' : '🧍'}</span>
-          <span class="floor">${p.floor}F</span>
-          <small>${p.floor % 2 ? '奇数梯' : '偶数梯'}</small>
-          <span class="patience"><i style="width:${Math.max(0,p.patience)}%"></i></span>
-        </button>`).join('');
-      q.querySelectorAll('[data-passenger]').forEach(btn => btn.addEventListener('click', () => {
-        state.selected = Number(btn.dataset.passenger);
-        render();
-        beep(520);
-      }));
-      ['odd','even'].forEach(type => {
-        bind(root, `${type}Load`).textContent = state.loads[type].length ? state.loads[type].map(p => `${p.floor}F`).join(' · ') : '空';
-        root.querySelector(`[data-elevator="${type}"] .capacity`).textContent = `${state.loads[type].length} / 3`;
-        root.querySelector(`[data-elevator="${type}"]`).classList.toggle('ready', state.loads[type].length === 3);
-      });
-      const pressure = Math.min(100, state.queue.length / 12 * 100);
-      bind(root, 'pressureBar').style.width = `${pressure}%`;
-      bind(root, 'pressureText').textContent = pressure < 45 ? '安全' : pressure < 75 ? '拥挤' : '即将崩盘';
-      root.querySelector('[data-action="rescue"]').disabled = state.rescue <= 0;
-    }
-    function load(type) {
-      if (state.ended) return;
-      if (state.selected == null) return status(root, '先选一名乘客，再点电梯。', 'bad');
-      const idx = state.queue.findIndex(p => p.id === state.selected);
-      if (idx < 0) return;
-      if (state.loads[type].length >= 3) return status(root, '这部电梯已满，先发车。', 'bad');
-      const p = state.queue[idx];
-      const correct = type === (p.floor % 2 ? 'odd' : 'even');
-      if (!correct) {
-        state.combo = 0;
-        p.patience -= 18;
-        status(root, `${p.floor}F 乘客坐错梯了，耐心下降。`, 'bad');
-        animate(root, 'shake');
-        beep(150, .11, 'sawtooth');
-        render();
-        return;
-      }
-      state.loads[type].push(p);
-      state.queue.splice(idx, 1);
-      state.selected = null;
-      state.score += p.vip ? 4 : 1;
-      status(root, `${p.floor}F 乘客已装载，继续凑同梯乘客或立即发车。`);
-      beep(620);
-      render();
-    }
-    function dispatch(type) {
-      const load = state.loads[type];
-      if (!load.length) return status(root, '空梯发车没有收益。', 'bad');
-      const floors = new Set(load.map(p => p.floor));
-      const perfect = load.length === 3 && floors.size <= 2;
-      const gained = load.length * 4 + (perfect ? 12 + state.combo * 2 : 0);
-      state.score += gained;
-      state.combo = perfect ? state.combo + 1 : 0;
-      status(root, perfect ? `精准调度！一次送走 ${load.length} 人，压力瞬间释放。` : `送走 ${load.length} 人，但装载不够紧凑。`, perfect ? 'good' : '');
-      const car = type === 'odd' ? oddCar : evenCar;
-      animate(car, 'moving');
-      beep(perfect ? 880 : 720, .14, 'triangle', .05);
-      state.loads[type] = [];
-      render();
-    }
-    oddCar.addEventListener('click', () => load('odd'));
-    evenCar.addEventListener('click', () => load('even'));
-    root.querySelector('[data-action="dispatchOdd"]').addEventListener('click', () => dispatch('odd'));
-    root.querySelector('[data-action="dispatchEven"]').addEventListener('click', () => dispatch('even'));
-    root.querySelector('[data-action="dispatchAll"]').addEventListener('click', () => { dispatch('odd'); dispatch('even'); });
-    root.querySelector('[data-action="rescue"]').addEventListener('click', () => {
-      if (!state.rescue) return;
-      state.rescue = 0;
-      const saved = state.queue.splice(0, Math.min(4, state.queue.length));
-      state.score += saved.length * 3;
-      status(root, `临时货梯带走 ${saved.length} 人，候梯区被救活。`, 'good');
-      beep(960, .2, 'triangle', .06);
-      render();
+  function stats(){
+    let income=1,dps=0,freezePower=0,laser=0,cold=false; const active=new Set();
+    S.cells.forEach((f,i)=>{ if(!f)return; const a=neigh(i).map(n=>S.cells[n]).filter(Boolean);
+      if(f.type==='shelf'){let n=2*f.lv;if(a.some(x=>x.type==='shelf')){n*=1.5;active.add('黄金货道')}income+=n}
+      if(f.type==='turret'){let n=7+5*f.lv;if(a.some(x=>x.type==='camera')){n*=1.8;laser++;active.add('锁定激光')}dps+=n}
+      if(f.type==='freezer'){freezePower+=f.lv;if(a.some(x=>x.type==='camera')){cold=true;active.add('冷链监控')}}
     });
-
-    for (let i = 0; i < 7; i++) createPassenger();
-    intervals.push(setInterval(createPassenger, 2600));
-    intervals.push(setInterval(() => {
-      if (state.ended) return;
-      state.time--;
-      state.queue.forEach(p => p.patience -= state.queue.length > 8 ? 7 : 4);
-      const lost = state.queue.filter(p => p.patience <= 0).length;
-      if (lost) {
-        state.queue = state.queue.filter(p => p.patience > 0);
-        state.combo = 0;
-        state.score = Math.max(0, state.score - lost * 5);
-        status(root, `${lost} 名乘客失去耐心离开，连调中断。`, 'bad');
-        beep(120, .18, 'sawtooth');
-      }
-      render();
-      if (state.time <= 0) end();
-    }, 1000));
-    function end() {
-      state.ended = true;
-      intervals.forEach(clearInterval);
-      showResult('电梯调度结束', state.score >= 70 ? '你体验到了“拥堵被精准清空”的释放感。' : '下一局试试保留空位，等待满载精准调度。', [
-        {label:'得分',value:state.score},{label:'最高连调',value:state.combo},{label:'滞留',value:state.queue.length}
-      ]);
-    }
-    render();
-    return () => { state.ended = true; intervals.forEach(clearInterval); };
+    active.forEach(x=>{if(!S.combos.has(x)){S.combos.add(x);say(`✨ 联动激活：${x}！${x==='黄金货道'?'经济开始滚雪球。':x==='锁定激光'?'炮台变成穿透激光。':'冷柜变成全场冻结。'}`,'good',2.2);beep(900,.18,'triangle',.04)}});
+    S.maxIncome=Math.max(S.maxIncome,Math.floor(income)); return {income,dps,freezePower,laser,cold,active};
   }
 
-  function mountBaggage() {
-    const root = cloneTemplate('baggageTemplate');
-    const canvas = bind(root, 'canvas');
-    const ctx = canvas.getContext('2d');
-    const state = { score:0, combo:0, maxCombo:0, time:60, first:'up', second:'mid', rescue:1, bags:[], lastSpawn:0, jamUntil:0, ended:false, raf:0, lastTime:performance.now() };
-    const colors = { red:'#ff6b7d', blue:'#58a6ff', yellow:'#ffd166' };
-    const routes = { red:'up', blue:'mid', yellow:'down' };
-    const intervals = [];
-
-    function spawn() {
-      const color = randomPick(['red','blue','yellow']);
-      state.bags.push({ color, x:40, y:260, route:null, done:false, speed:105 + Math.min(80,state.combo*4) });
-    }
-    function setSwitch(which) {
-      if (which === 'first') state.first = state.first === 'up' ? 'downstream' : 'up';
-      else state.second = state.second === 'mid' ? 'down' : 'mid';
-      bind(root, which === 'first' ? 'switch1' : 'switch2').textContent = which === 'first' ? (state.first === 'up' ? '上路' : '去道岔2') : (state.second === 'mid' ? '中路' : '下路');
-      beep(600);
-    }
-    root.querySelector('[data-switch="first"]').addEventListener('click', () => setSwitch('first'));
-    root.querySelector('[data-switch="second"]').addEventListener('click', () => setSwitch('second'));
-    root.querySelector('[data-action="clearJam"]').addEventListener('click', () => {
-      if (!state.rescue) return;
-      state.rescue = 0;
-      state.jamUntil = 0;
-      state.bags = state.bags.filter(b => b.x < 680);
-      status(root, '机械臂清除了错误行李，流水线重新顺畅。', 'good');
-      beep(940, .18, 'triangle', .06);
-      root.querySelector('[data-action="clearJam"]').disabled = true;
-    });
-
-    function routeY(route, x) {
-      if (x < 360) return 260;
-      if (route === 'up') return 260 - (x-360)*.55;
-      if (x < 600) return 260;
-      if (route === 'mid') return 260;
-      return 260 + (x-600)*.75;
-    }
-    function drawTrack() {
-      ctx.lineWidth = 18; ctx.lineCap = 'round'; ctx.strokeStyle = '#253147';
-      const line = pts => { ctx.beginPath(); ctx.moveTo(...pts[0]); pts.slice(1).forEach(p=>ctx.lineTo(...p)); ctx.stroke(); };
-      line([[20,260],[360,260]]);
-      line([[360,260],[690,80],[870,80]]);
-      line([[360,260],[600,260]]);
-      line([[600,260],[870,260]]);
-      line([[600,260],[760,430],[870,430]]);
-      ctx.fillStyle = '#141d2a'; ctx.fillRect(820,38,65,84); ctx.fillRect(820,218,65,84); ctx.fillRect(820,388,65,84);
-      [['A',850,85,colors.red],['B',850,265,colors.blue],['C',850,435,colors.yellow]].forEach(([t,x,y,c])=>{ctx.fillStyle=c;ctx.font='bold 26px sans-serif';ctx.textAlign='center';ctx.fillText(t,x,y+8);});
-      ctx.fillStyle = '#76e6b6'; ctx.beginPath(); ctx.arc(360,260,11,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(600,260,11,0,Math.PI*2); ctx.fill();
-    }
-    function updateBag(b, dt) {
-      const jammed = performance.now() < state.jamUntil;
-      b.x += b.speed * dt * (jammed ? .22 : 1);
-      if (!b.route && b.x >= 360) b.route = state.first === 'up' ? 'up' : (state.second === 'mid' ? 'mid' : 'down');
-      b.y = routeY(b.route, b.x);
-      if (b.x >= 830 && !b.done) {
-        b.done = true;
-        const correct = routes[b.color] === b.route;
-        if (correct) {
-          state.combo++;
-          state.maxCombo = Math.max(state.maxCombo,state.combo);
-          const gain = 4 + Math.min(20,state.combo);
-          state.score += gain;
-          if (state.combo % 5 === 0) { status(root, `${state.combo} 连击！流水线进入顺流，行李速度提升。`, 'good'); beep(900, .12, 'triangle', .055); }
-          else beep(720 + state.combo*12, .05);
-        } else {
-          state.combo = 0;
-          state.score = Math.max(0,state.score-5);
-          state.jamUntil = performance.now()+1800;
-          status(root, '错分造成堵塞！下一批行李正在逼近。', 'bad');
-          animate(root,'shake'); beep(130,.18,'sawtooth');
-        }
-      }
-    }
-    function drawBag(b) {
-      ctx.save();
-      ctx.translate(b.x,b.y);
-      ctx.fillStyle = colors[b.color];
-      ctx.strokeStyle = '#0b1018'; ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.roundRect(-18,-14,36,28,7); ctx.fill(); ctx.stroke();
-      ctx.beginPath(); ctx.strokeStyle = colors[b.color]; ctx.lineWidth=5; ctx.arc(0,-15,8,Math.PI,0);ctx.stroke();
-      ctx.restore();
-    }
-    function frame(now) {
-      if (state.ended) return;
-      const dt = Math.min(.04,(now-state.lastTime)/1000); state.lastTime=now;
-      if (now-state.lastSpawn > Math.max(650,1300-state.combo*18)) { spawn(); state.lastSpawn=now; }
-      state.bags.forEach(b=>updateBag(b,dt));
-      state.bags = state.bags.filter(b=>b.x<920);
-      ctx.clearRect(0,0,canvas.width,canvas.height);
-      drawTrack();
-      state.bags.forEach(drawBag);
-      if (now < state.jamUntil) { ctx.fillStyle='rgba(255,107,107,.16)';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.fillStyle='#ff6b6b';ctx.font='bold 30px sans-serif';ctx.textAlign='center';ctx.fillText('堵塞！',450,55); }
-      state.raf=requestAnimationFrame(frame);
-    }
-    intervals.push(setInterval(()=>{
-      state.time--; bind(root,'time').textContent=state.time; bind(root,'score').textContent=state.score; bind(root,'combo').textContent=state.combo;
-      if(state.time<=0) end();
-    },1000));
-    function end(){ state.ended=true; cancelAnimationFrame(state.raf); intervals.forEach(clearInterval); showResult('行李夜班结束',state.maxCombo>=8?'你体验到了“预判正确后整线顺流”的高速连击感。':'下一局提前看后续颜色，在行李到道岔前切换。',[{label:'得分',value:state.score},{label:'最高连击',value:state.maxCombo},{label:'剩余行李',value:state.bags.length}]); }
-    bind(root,'score').textContent=0; bind(root,'combo').textContent=0;
-    state.raf=requestAnimationFrame(frame);
-    return ()=>{state.ended=true;cancelAnimationFrame(state.raf);intervals.forEach(clearInterval);};
+  function init(){
+    cancelAnimationFrame(raf); S=fresh(); last=performance.now(); E.grid.innerHTML='';
+    for(let i=0;i<9;i++){const b=document.createElement('button');b.type='button';b.className=`store-cell${i===4?' recommended':''}`;b.addEventListener('click',()=>cellClick(i));E.grid.appendChild(b)}
+    E.modal.classList.add('hidden'); document.querySelectorAll('button').forEach(b=>b.disabled=false); E.emergency.disabled=false; select('shelf'); render(); raf=requestAnimationFrame(loop);
   }
 
-  function mountFire() {
-    const root = cloneTemplate('fireTemplate');
-    const state = {
-      score:0, combo:0, maxCombo:0, time:60, boost:1, total:6, ended:false,
-      zones:[
-        {id:0,name:'居民楼',fire:56,pressure:2,wind:false,saved:false},
-        {id:1,name:'商场',fire:42,pressure:2,wind:false,saved:false},
-        {id:2,name:'仓库',fire:68,pressure:1,wind:false,saved:false}
-      ], windIndex:-1
-    };
-    const intervals=[];
-    function render(){
-      bind(root,'score').textContent=state.score; bind(root,'combo').textContent=state.combo; bind(root,'time').textContent=state.time;
-      const used=state.zones.reduce((s,z)=>s+z.pressure,0); bind(root,'freePressure').textContent=Math.max(0,state.total-used);
-      bind(root,'wind').textContent=state.windIndex<0?'平稳':`吹向${state.zones[state.windIndex].name}`;
-      bind(root,'zones').innerHTML=state.zones.map(z=>`
-        <article class="fire-zone ${z.fire>=82?'critical':''}" data-zone="${z.id}">
-          <div><div class="zone-name">${z.name}</div><div class="zone-stats">火势 ${Math.round(z.fire)} / 水压 ${z.pressure}</div></div>
-          <div class="zone-visual"><div class="flame" style="transform:scale(${.55+z.fire/130})">${z.fire<10?'💨':'🔥'}</div></div>
-          <div><div class="fire-bar"><i style="width:${Math.min(100,z.fire)}%"></i></div>
-          <div class="pressure-controls"><button data-minus="${z.id}" type="button">−</button><div class="pressure-dots">${'●'.repeat(z.pressure)}${'○'.repeat(Math.max(0,5-z.pressure))}</div><button data-plus="${z.id}" type="button">＋</button></div></div>
-        </article>`).join('');
-      root.querySelectorAll('[data-plus]').forEach(b=>b.addEventListener('click',()=>changePressure(Number(b.dataset.plus),1)));
-      root.querySelectorAll('[data-minus]').forEach(b=>b.addEventListener('click',()=>changePressure(Number(b.dataset.minus),-1)));
-      root.querySelector('[data-action="boost"]').disabled=!state.boost;
-    }
-    function changePressure(id,delta){
-      const z=state.zones[id]; const used=state.zones.reduce((s,a)=>s+a.pressure,0);
-      if(delta>0&&used>=state.total)return status(root,'总水压已用完，先从低危区域回收。','bad');
-      if(delta<0&&z.pressure<=0)return;
-      z.pressure+=delta; status(root,delta>0?`向${z.name}追加水压。`:`从${z.name}回收一格水压。`); beep(delta>0?650:420); render();
-    }
-    function tick(){
-      state.time--;
-      let lost=false;
-      state.zones.forEach((z,i)=>{
-        const before=z.fire;
-        const growth=5.2+(i===state.windIndex?4.8:0)+(z.fire>70?1.2:0);
-        const suppression=z.pressure*(z.fire>70?5.7:4.4);
-        z.fire=Math.max(0,Math.min(110,z.fire+growth-suppression));
-        if(before>=72&&z.fire<20){ state.combo++;state.maxCombo=Math.max(state.maxCombo,state.combo);state.score+=20+state.combo*5;status(root,`极限翻盘！${z.name}从红线被一口气压下。`,'good');beep(980,.2,'triangle',.06); }
-        if(z.fire===0&&!z.saved){z.saved=true;state.score+=12;status(root,`${z.name}火势归零，形成完整灭火反馈。`,'good');beep(820,.12,'triangle');}
-        if(z.fire>0)z.saved=false;
-        if(z.fire>=100)lost=true;
-      });
-      if(Math.random()<.18){state.windIndex=Math.floor(Math.random()*3);status(root,`风向突变：火势正吹向${state.zones[state.windIndex].name}。`,'bad');}
-      if(Math.random()<.08)state.windIndex=-1;
-      render();
-      if(lost||state.time<=0)end(lost);
-    }
-    root.querySelector('[data-action="balance"]').addEventListener('click',()=>{
-      state.zones.forEach(z=>z.pressure=2); state.total=Math.max(state.total,6); status(root,'平均分压很稳，但不一定能救下最危险区域。');render();
-    });
-    root.querySelector('[data-action="focusWorst"]').addEventListener('click',()=>{
-      const worst=[...state.zones].sort((a,b)=>b.fire-a.fire)[0];state.zones.forEach(z=>z.pressure=1);worst.pressure=Math.min(4,state.total-2);status(root,`水压集中到${worst.name}，准备制造一次红线翻盘。`,'good');beep(760,.1,'triangle');render();
-    });
-    root.querySelector('[data-action="boost"]').addEventListener('click',()=>{
-      if(!state.boost)return;state.boost=0;state.total+=3;status(root,'增压泵启动！短期总水压增加 3 格。','good');beep(920,.2,'triangle',.06);render();
-    });
-    function end(lost){state.ended=true;intervals.forEach(clearInterval);showResult(lost?'火场失控':'消防轮班结束',state.maxCombo>0?'你体验到了“放弃平均、集中资源、红线翻盘”的爽点。':'下一局不要平均分压，把水从低危区抽到红线区域。',[{label:'救援分',value:state.score},{label:'极限翻盘',value:state.maxCombo},{label:'剩余水压',value:Math.max(0,state.total-state.zones.reduce((s,z)=>s+z.pressure,0))}]);}
-    render();
-    intervals.push(setInterval(tick,1000));
-    return()=>{state.ended=true;intervals.forEach(clearInterval);};
+  function cellClick(i){
+    if(!S.running)return; const f=S.cells[i];
+    if(f){ if(f.lv>=3)return say(`${DEF[f.type].name}已经满级。`,'good'); const cost=Math.round(DEF[f.type].cost*(.7+f.lv*.45)); if(S.money<cost)return say(`升级需要 ¥${cost}。`,'bad');S.money-=cost;f.lv++;pop(i);say(`${DEF[f.type].name}升到 ${f.lv} 级，能力明显增强。`,'good');beep(800+f.lv*90,.1,'triangle');render();return }
+    const d=DEF[S.selected]; if(S.money<d.cost)return say(`现金不足：${d.name}需要 ¥${d.cost}。`,'bad');
+    S.money-=d.cost;S.cells[i]={type:S.selected,lv:1};pop(i);beep(S.selected==='shelf'?540:680,.08,'triangle');say(`已建造${d.name}。${hint(S.selected)}`,'good');tutorial();render();
+  }
+  const hint=t=>t==='shelf'?'相邻货架会额外增收。':t==='turret'?'它会自动攻击最近的敌人。':t==='freezer'?'它会周期冻结全场。':'把它贴着炮台或冷柜放。';
+  function pop(i){const b=E.grid.children[i];b.classList.remove('hit');void b.offsetWidth;b.classList.add('hit')}
+  function tutorial(){const c=counts();if(S.tutorial===0&&c.shelf){S.tutorial=1;E.coachTitle.textContent='第二步：补一座炮台';E.coachText.textContent='异常顾客快到了。选择“自动炮台”，再放到空格。';select('turret');recommend()}else if(S.tutorial===1&&c.turret){S.tutorial=2;E.coachTitle.textContent='核心抉择已经开始';E.coachText.textContent='继续货架会滚经济，但怪物也在逼近。撑过 90 秒。';[...E.grid.children].forEach(x=>x.classList.remove('recommended'))}}
+  function recommend(){const i=S.cells.findIndex(x=>!x);if(i>=0)E.grid.children[i].classList.add('recommended')}
+  function buff(i,f){const a=neigh(i).map(n=>S.cells[n]).filter(Boolean);if(f.type==='shelf'&&a.some(x=>x.type==='shelf'))return'黄金货道 +50%';if(f.type==='turret'&&a.some(x=>x.type==='camera'))return'锁定激光 · 穿透';if(f.type==='freezer'&&a.some(x=>x.type==='camera'))return'冷链监控 · 全场冻结';if(f.type==='camera'&&a.some(x=>x.type==='turret'))return'强化相邻炮台';if(f.type==='camera'&&a.some(x=>x.type==='freezer'))return'强化相邻冷柜';return''}
+
+  function doorUpgrade(){const cost=40+(S.doorLv-1)*35;if(S.money<cost)return say(`加固门需要 ¥${cost}。`,'bad');S.money-=cost;S.doorLv++;S.hpMax+=30;S.hp=Math.min(S.hpMax,S.hp+45);say(`卷帘门升到 ${S.doorLv} 级，耐久大幅提高。`,'good');beep(430,.12,'square');render()}
+  function emergency(){if(S.emergency||!S.running)return;S.emergency=true;S.frozenUntil=S.t+4;S.enemies.forEach(e=>e.y=Math.max(45,e.y-70));S.fx.push({type:'wave',life:1,max:1});E.emergency.disabled=true;say('⚡ 应急断电：敌人被震退并冻结 4 秒。这里就是自然的广告救场点。','good');beep(180,.35,'sawtooth')}
+
+  function spawn(boss=false){
+    if(boss)S.boss=true; const wave=1+Math.floor(S.t/18),hp=boss?720:40+wave*18+Math.random()*18;
+    S.enemies.push({id:S.nextId++,x:90+Math.random()*720,y:30,hp,max:hp,speed:boss?24:30+wave*4+Math.random()*10,damage:boss?18:4+wave*1.8,atk:0,boss,frozen:0,wobble:Math.random()*6.28});
+    if(boss){say('⚠️ 异常店长出现！现在必须依靠联动、升级或应急断电。','bad');beep(92,.6,'sawtooth')}
   }
 
-  mount('elevator');
+  function update(dt){
+    if(!S.running)return;S.t+=dt;S.spawn+=dt;S.cash+=dt;S.freeze+=dt;S.lock=Math.max(0,S.lock-dt);const st=stats(),left=90-S.t;
+    if(S.cash>=1){S.cash-=1;S.money+=st.income;const card=E.money.closest('.hud-card');card.classList.remove('flash');void card.offsetWidth;card.classList.add('flash');S.cells.forEach((f,i)=>f?.type==='shelf'&&pop(i));beep(880,.025,'sine',.015)}
+    const interval=S.t<10?999:Math.max(4.1,7.2-S.t*.03);if(S.spawn>=interval){S.spawn=0;const n=S.t<30?2:S.t<58?3:4;for(let i=0;i<n;i++)spawn();say(`第 ${1+Math.floor(S.t/18)} 批异常顾客成群出现。`,'bad',1)}
+    if(!S.boss&&S.t>=66)spawn(true);
+    if(st.freezePower){const interval=st.cold?5:Math.max(7,9-st.freezePower);if(S.freeze>=interval){S.freeze=0;const d=st.cold?3.2:1.3+st.freezePower*.35;S.enemies.forEach(e=>e.frozen=Math.max(e.frozen,d));S.fx.push({type:'ice',life:.8,max:.8});say(st.cold?'❄️ 冷链监控触发：全场深度冻结。':'冷柜启动，敌人减速。','good',1.4);beep(320,.15)}}
+    shoot(dt,st);moveEnemies(dt);S.shots.forEach(x=>x.life-=dt);S.shots=S.shots.filter(x=>x.life>0);S.fx.forEach(x=>x.life-=dt);S.fx=S.fx.filter(x=>x.life>0);
+    if(left<=0)finish(true);if(S.hp<=0)finish(false);render(st);
+  }
+  function shoot(dt,st){if(!st.dps||!S.enemies.length)return;const t=S.enemies.reduce((a,b)=>!a||b.y>a.y?b:a,null);t.hp-=st.dps*dt;if(Math.random()<dt*(4+st.laser*2)){S.shots.push({x1:450+(Math.random()-.5)*210,y1:390,x2:t.x,y2:t.y,life:.11,laser:st.laser>0});beep(st.laser?1040:620,.025,'square',.012)}if(st.laser&&Math.random()<dt*1.7)S.enemies.filter(e=>e!==t&&Math.abs(e.y-t.y)<75).slice(0,2).forEach(e=>e.hp-=st.dps*dt*.35)}
+  function moveEnemies(dt){
+    const global=S.t<S.frozenUntil;for(const e of S.enemies){if(e.hp<=0)continue;e.frozen=Math.max(0,e.frozen-dt);const slow=global?0:e.frozen>0?.28:1;if(e.y<342){e.y+=e.speed*slow*dt;e.wobble+=dt*5}else{e.atk+=dt;if(e.atk>=(e.boss?.65:1.05)){e.atk=0;S.hp-=e.damage/(1+(S.doorLv-1)*.22);E.c.classList.remove('shake');void E.c.offsetWidth;E.c.classList.add('shake');if(S.hp<S.hpMax*.35)say('卷帘门进入红线！下一次收入能否赶上加固？','bad',1.2);beep(110,.07,'sawtooth',.035)}}}
+    const dead=S.enemies.filter(e=>e.hp<=0);dead.forEach(e=>{S.kills++;S.money+=e.boss?55:4;S.fx.push({type:'burst',x:e.x,y:e.y,life:.55,max:.55});if(e.boss)say('💥 异常店长被击退！你建立的系统开始反过来碾压敌人。','good',3)});S.enemies=S.enemies.filter(e=>e.hp>0)
+  }
+
+  function render(pre){const st=pre||stats(),left=Math.max(0,Math.ceil(90-S.t)),pct=Math.max(0,Math.min(100,S.hp/S.hpMax*100));E.hp.textContent=Math.ceil(pct);E.hpBar.style.width=pct+'%';E.hpBar.style.background=pct<35?'var(--danger)':pct<65?'var(--warning)':'var(--accent)';E.money.textContent=Math.floor(S.money);E.income.textContent=Math.floor(st.income);E.time.textContent=left;E.wave.textContent=S.t<10?`第一批异常顾客 ${Math.max(1,Math.ceil(10-S.t))} 秒后出现`:S.t<66?`第 ${1+Math.floor((S.t-10)/18)} 波 · 敌人持续增强`:'Boss 夜班 · 撑到天亮';
+    const close=S.enemies.reduce((m,e)=>Math.max(m,e.y),0),th=S.hp<S.hpMax*.35||close>315?'极高':close>250||S.enemies.length>7?'高':S.enemies.length>2?'中':'低';E.threat.textContent=th;E.threat.style.color=th==='高'||th==='极高'?'var(--danger)':th==='中'?'var(--warning)':'var(--accent)';E.doorState.textContent=pct<35?'门快破了！':pct<70?'正在承压':'安全';E.doorState.style.color=pct<35?'var(--danger)':pct<70?'var(--warning)':'var(--accent)';
+    const doorCost=40+(S.doorLv-1)*35;E.doorBtn.textContent=`加固门 ¥${doorCost}`;E.doorBtn.disabled=!S.running||S.money<doorCost;document.querySelectorAll('.build-card').forEach(b=>b.disabled=!S.running||S.money<DEF[b.dataset.build].cost);
+    E.combo.classList.toggle('active',st.active.size>0);E.combo.textContent=st.active.size?`联动：${[...st.active].join(' · ')}`:'把监控贴着炮台或冷柜放置';
+    S.cells.forEach((f,i)=>{const b=E.grid.children[i];b.classList.toggle('occupied',!!f);if(!f){b.innerHTML='';return}const d=DEF[f.type],u=f.lv<3?Math.round(d.cost*(.7+f.lv*.45)):0,x=buff(i,f);b.innerHTML=`<div class="facility"><span class="level-pips">${'★'.repeat(f.lv)}</span><span class="facility-icon">${d.icon}</span><span class="facility-name">${d.name} Lv.${f.lv}</span><span class="facility-meta">${f.lv<3?`点击升级 ¥${u}`:'已满级'}</span>${x?`<span class="facility-buff">${x}</span>`:''}</div>`});
+  }
+
+  function draw(){const w=E.c.width,h=E.c.height;ctx.clearRect(0,0,w,h);const g=ctx.createLinearGradient(0,0,0,h);g.addColorStop(0,'#101827');g.addColorStop(1,'#0a0f17');ctx.fillStyle=g;ctx.fillRect(0,0,w,h);ctx.fillStyle='#182231';ctx.fillRect(48,78,w-96,278);ctx.strokeStyle='#2f3d52';ctx.lineWidth=2;ctx.setLineDash([20,18]);ctx.beginPath();ctx.moveTo(w/2,85);ctx.lineTo(w/2,350);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle='#263348';ctx.fillRect(0,354,w,66);for(let x=28;x<w;x+=58){ctx.fillStyle='#5a6b82';ctx.fillRect(x,377,34,4)}S.enemies.forEach(drawEnemy);S.shots.forEach(drawShot);S.fx.forEach(drawFx);drawDefense(stats())}
+  function drawEnemy(e){const frozen=e.frozen>0||S.t<S.frozenUntil,scale=e.boss?1.75:1.08;ctx.save();ctx.translate(e.x+Math.sin(e.wobble)*2,e.y);ctx.scale(scale,scale);if(frozen){ctx.fillStyle='#62a9ff55';ctx.beginPath();ctx.arc(0,0,38,0,6.28);ctx.fill()}ctx.font=`${e.boss?58:44}px system-ui`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(e.boss?'👹':'👤',0,0);ctx.restore();const bw=e.boss?120:66,r=Math.max(0,e.hp/e.max),y=e.y-(e.boss?66:40);ctx.fillStyle='#2b3547';ctx.fillRect(e.x-bw/2,y,bw,5);ctx.fillStyle=e.boss?'#ff626f':'#ffca57';ctx.fillRect(e.x-bw/2,y,bw*r,5);if(e.boss){ctx.fillStyle='#ffabb1';ctx.font='bold 15px system-ui';ctx.textAlign='center';ctx.fillText('异常店长',e.x,e.y-78)}}
+  function drawShot(s){ctx.save();ctx.globalAlpha=Math.min(1,s.life*9);ctx.strokeStyle=s.laser?'#b495ff':'#ffca57';ctx.lineWidth=s.laser?8:4;ctx.beginPath();ctx.moveTo(s.x1,s.y1);ctx.lineTo(s.x2,s.y2);ctx.stroke();ctx.restore()}
+  function drawFx(p){const q=1-p.life/p.max;ctx.save();if(p.type==='burst'){ctx.globalAlpha=1-q;ctx.strokeStyle='#ffca57';ctx.lineWidth=5;ctx.beginPath();ctx.arc(p.x,p.y,12+q*34,0,6.28);ctx.stroke()}else if(p.type==='ice'){ctx.globalAlpha=.25*(1-q);ctx.fillStyle='#62a9ff';ctx.fillRect(0,0,E.c.width,E.c.height)}else{ctx.globalAlpha=.35*(1-q);ctx.strokeStyle='#ffca57';ctx.lineWidth=10;ctx.beginPath();ctx.arc(450,350,40+q*500,Math.PI,6.28);ctx.stroke()}ctx.restore()}
+  function drawDefense(st){const c=counts(),a=[];for(let i=0;i<c.turret;i++)a.push(st.laser>i?'🟣':'🔫');for(let i=0;i<c.freezer;i++)a.push('❄️');ctx.font='34px system-ui';ctx.textAlign='center';a.forEach((x,i)=>ctx.fillText(x,450-Math.max(1,a.length-1)*26+i*52,396))}
+
+  function loop(now){const dt=Math.min(.05,(now-last)/1000);last=now;update(dt);draw();raf=requestAnimationFrame(loop)}
+  function finish(win){if(!S.running)return;S.running=false;document.querySelectorAll('button').forEach(b=>{if(!['resultRetry','restartButton','soundToggle'].includes(b.id))b.disabled=true});E.resultTitle.textContent=win?'天亮了，便利店守住了':'卷帘门被撞开了';E.resultText.textContent=win?'你完成了“贪经济—承压—构筑联动—反杀”的循环。':'失败原因应该清楚：经济贪太久、防线不足、没有联动，或救场太迟。';E.resultIncome.textContent=S.maxIncome;E.resultKills.textContent=S.kills;E.resultCombos.textContent=S.combos.size;E.modal.classList.remove('hidden');beep(win?660:120,.6,win?'triangle':'sawtooth')}
+
+  document.querySelectorAll('.build-card').forEach(b=>b.addEventListener('click',()=>select(b.dataset.build)));E.doorBtn.addEventListener('click',doorUpgrade);E.emergency.addEventListener('click',emergency);E.restart.addEventListener('click',init);E.retry.addEventListener('click',init);E.sound.addEventListener('click',()=>{soundOn=!soundOn;E.sound.textContent=soundOn?'🔊':'🔇'});init();
 })();
