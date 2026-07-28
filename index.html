@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#10131a" />
+  <title>IAA 三机制灰盒</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">15 天创意验证 · Web 灰盒</p>
+        <h1>三个机制，直接试玩爽点</h1>
+      </div>
+      <button id="soundToggle" class="icon-button" type="button" aria-label="切换音效">🔊</button>
+    </header>
+
+    <nav class="tabs" aria-label="选择游戏原型">
+      <button class="tab active" data-game="elevator" type="button"><span>01</span> 电梯总调度</button>
+      <button class="tab" data-game="baggage" type="button"><span>02</span> 行李夜班</button>
+      <button class="tab" data-game="fire" type="button"><span>03</span> 消防总控</button>
+    </nav>
+
+    <section id="gameStage" class="game-stage" aria-live="polite"></section>
+  </main>
+
+  <template id="elevatorTemplate">
+    <section class="prototype elevator-game">
+      <div class="prototype-head">
+        <div>
+          <p class="mechanic-tag">压力 → 分类 → 一次清空</p>
+          <h2>电梯总调度</h2>
+          <p>点乘客加入候选，再点电梯装载。让奇数梯和偶数梯精准送客，别让耐心归零。</p>
+        </div>
+        <div class="score-cluster">
+          <div><span>得分</span><strong data-bind="score">0</strong></div>
+          <div><span>连调</span><strong data-bind="combo">0</strong></div>
+          <div><span>剩余</span><strong data-bind="time">60</strong></div>
+        </div>
+      </div>
+
+      <div class="elevator-layout">
+        <div class="building-panel">
+          <div class="floor-labels" aria-hidden="true"><span>6F</span><span>5F</span><span>4F</span><span>3F</span><span>2F</span><span>1F</span></div>
+          <div class="shaft-group">
+            <button class="elevator-car odd" data-elevator="odd" type="button">
+              <span class="car-title">奇数梯</span><span class="car-rule">1·3·5F</span><span class="car-load" data-bind="oddLoad">空</span><span class="capacity">0 / 3</span>
+            </button>
+            <button class="elevator-car even" data-elevator="even" type="button">
+              <span class="car-title">偶数梯</span><span class="car-rule">2·4·6F</span><span class="car-load" data-bind="evenLoad">空</span><span class="capacity">0 / 3</span>
+            </button>
+          </div>
+          <div class="lobby-strip">1F 大堂 · 点击电梯装载 / 发车</div>
+        </div>
+
+        <div class="queue-panel">
+          <div class="queue-head">
+            <div><span>候梯人群</span><small>先点乘客，再点对应电梯</small></div>
+            <button class="secondary-button" data-action="dispatchAll" type="button">双梯发车</button>
+          </div>
+          <div class="passenger-queue" data-bind="queue"></div>
+          <div class="pressure-meter">
+            <div class="meter-label"><span>大堂压力</span><strong data-bind="pressureText">安全</strong></div>
+            <div class="meter-track"><i data-bind="pressureBar"></i></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="action-row">
+        <button class="primary-button" data-action="dispatchOdd" type="button">奇数梯发车</button>
+        <button class="primary-button" data-action="dispatchEven" type="button">偶数梯发车</button>
+        <button class="rescue-button" data-action="rescue" type="button">临时货梯 ×1</button>
+      </div>
+      <p class="status-line" data-bind="status">把去往同类楼层的乘客成组送走，会获得“精准调度”连击。</p>
+    </section>
+  </template>
+
+  <template id="baggageTemplate">
+    <section class="prototype baggage-game">
+      <div class="prototype-head">
+        <div>
+          <p class="mechanic-tag">预判 → 切道 → 连续命中</p>
+          <h2>机场行李夜班</h2>
+          <p>红、蓝、黄行李要进入同色登机口。点击两个道岔切换方向，别等箱子到了才反应。</p>
+        </div>
+        <div class="score-cluster">
+          <div><span>得分</span><strong data-bind="score">0</strong></div>
+          <div><span>连击</span><strong data-bind="combo">0</strong></div>
+          <div><span>航班</span><strong data-bind="time">60</strong></div>
+        </div>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas data-bind="canvas" width="900" height="520" aria-label="行李传送带游戏区"></canvas>
+        <div class="gate-legend" aria-hidden="true"><span class="red">A 红色登机口</span><span class="blue">B 蓝色登机口</span><span class="yellow">C 黄色登机口</span></div>
+      </div>
+
+      <div class="switch-row">
+        <button class="switch-button" data-switch="first" type="button"><span>道岔 1</span><strong data-bind="switch1">上路</strong></button>
+        <button class="switch-button" data-switch="second" type="button"><span>道岔 2</span><strong data-bind="switch2">中路</strong></button>
+        <button class="rescue-button" data-action="clearJam" type="button">清障机械臂 ×1</button>
+      </div>
+      <p class="status-line" data-bind="status">连续正确分流会提速并累积连击；错分会造成短暂堵塞。</p>
+    </section>
+  </template>
+
+  <template id="fireTemplate">
+    <section class="prototype fire-game">
+      <div class="prototype-head">
+        <div>
+          <p class="mechanic-tag">取舍 → 调压 → 极限翻盘</p>
+          <h2>消防总控</h2>
+          <p>总水压只有 6 格。点击区域加压或减压；火势会随风增长，不能平均主义。</p>
+        </div>
+        <div class="score-cluster">
+          <div><span>救援</span><strong data-bind="score">0</strong></div>
+          <div><span>连灭</span><strong data-bind="combo">0</strong></div>
+          <div><span>剩余</span><strong data-bind="time">60</strong></div>
+        </div>
+      </div>
+
+      <div class="fire-scene">
+        <div class="pump-center">
+          <div class="pump-core"><span>总水压</span><strong data-bind="freePressure">6</strong><small>剩余可分配</small></div>
+          <div class="main-pipe"></div>
+        </div>
+        <div class="fire-zones" data-bind="zones"></div>
+      </div>
+
+      <div class="wind-panel"><span>风向事件</span><strong data-bind="wind">平稳</strong><small>受风区域火势增长更快，提前转移水压。</small></div>
+
+      <div class="action-row">
+        <button class="secondary-button" data-action="balance" type="button">平均分压</button>
+        <button class="secondary-button" data-action="focusWorst" type="button">聚焦最危险区</button>
+        <button class="rescue-button" data-action="boost" type="button">增压泵 ×1</button>
+      </div>
+      <p class="status-line" data-bind="status">把即将失控的区域从红线救回来，会获得最高的翻盘分。</p>
+    </section>
+  </template>
+
+  <div id="resultModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="resultTitle">
+    <div class="modal-card">
+      <p class="eyebrow">灰盒体验结束</p><h2 id="resultTitle">本局结算</h2><p id="resultSummary"></p>
+      <div class="result-metrics" id="resultMetrics"></div>
+      <div class="modal-actions"><button id="retryButton" class="primary-button" type="button">再玩一次</button><button id="nextGameButton" class="secondary-button" type="button">下一个原型</button></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
