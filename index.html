@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="theme-color" content="#090b12" />
+  <title>凌晨四点 · 异常便利店</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="phone" aria-label="凌晨四点异常便利店游戏原型">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-kicker">异常营业守则</span>
+        <strong>凌晨四点</strong>
+      </div>
+      <button id="soundButton" class="icon-button" type="button" aria-label="开关音效">🔊</button>
+    </header>
+
+    <section class="hud" aria-label="状态信息">
+      <div class="hud-item">
+        <span>卷帘门</span>
+        <strong><b id="doorValue">100</b>/<b id="doorMaxValue">100</b></strong>
+        <div class="bar"><i id="doorBar"></i></div>
+      </div>
+      <div class="hud-item">
+        <span>现金</span>
+        <strong>¥<b id="moneyValue">72</b></strong>
+        <small>声誉 <b id="repValue">100</b></small>
+      </div>
+      <div class="hud-item protocol-item">
+        <span>证据</span>
+        <strong><b id="evidenceValue">0</b>%</strong>
+        <div class="bar evidence"><i id="evidenceBar"></i></div>
+      </div>
+    </section>
+
+    <section id="ruleCard" class="rule-card" aria-live="polite">
+      <div class="rule-round">第 <b id="roundValue">1</b>/3 轮 · <span id="phaseText">营业中</span></div>
+      <div class="rule-main">
+        <span class="rule-icon">📋</span>
+        <div>
+          <small>今晚守则</small>
+          <strong id="ruleTitle">没有影子的人，不是顾客</strong>
+          <p id="ruleHint">观察每位顾客的特征，点选可疑者拒绝入店。</p>
+        </div>
+      </div>
+      <div class="round-timer"><i id="roundTimerBar"></i></div>
+    </section>
+
+    <section class="inspection-card">
+      <div class="section-title">
+        <div>
+          <strong>门口盘查</strong>
+          <small id="inspectionHint">顾客正在到店，点卡片切换“放行 / 拒绝”</small>
+        </div>
+        <div class="arrival-count"><b id="arrivedValue">0</b>/<span id="visitorTotalValue">5</span></div>
+      </div>
+      <div id="visitorLane" class="visitor-lane" aria-label="等待盘查的顾客"></div>
+      <div class="inspection-actions">
+        <button id="closeEarlyButton" class="close-button" type="button">
+          <span>🔒 立即熄灯</span>
+          <small id="closeButtonHint">越早关门越安全，但未到店顾客不会结账</small>
+        </button>
+        <div class="forecast">
+          <span>预计营业收入</span>
+          <strong>¥<b id="forecastValue">0</b></strong>
+        </div>
+      </div>
+    </section>
+
+    <section class="battle-card">
+      <div class="section-title compact">
+        <div><strong>卷帘门外</strong><small id="battleHint">熄灯后，设施会切换成防御模式</small></div>
+        <div class="enemy-count">威胁 <b id="enemyValue">0</b></div>
+      </div>
+      <canvas id="battleCanvas" width="390" height="170" aria-label="异常顾客攻击卷帘门"></canvas>
+      <button id="protocolButton" class="protocol-button" type="button" disabled>
+        <span>⚡ 封店协议</span>
+        <small>证据满100%：震退、封印并修门</small>
+      </button>
+    </section>
+
+    <section class="store-card">
+      <div class="section-title compact">
+        <div><strong>店内改造</strong><small>营业时赚钱，熄灯后变成武器</small></div>
+        <button id="doorUpgradeButton" class="door-button" type="button">门体升级 ¥45</button>
+      </div>
+      <div id="storeGrid" class="store-grid" aria-label="便利店九格布局"></div>
+      <div id="synergyStrip" class="synergy-strip">尚未形成跨模式联动</div>
+    </section>
+
+    <section class="build-dock" aria-label="设施列表">
+      <button class="build-button selected" data-build="shelf" type="button">
+        <span>🛒</span><strong>货架</strong><small>¥24</small>
+      </button>
+      <button class="build-button" data-build="freezer" type="button">
+        <span>❄️</span><strong>冷柜</strong><small>¥32</small>
+      </button>
+      <button class="build-button" data-build="camera" type="button">
+        <span>📹</span><strong>监控</strong><small>¥38</small>
+      </button>
+      <button class="build-button" data-build="generator" type="button">
+        <span>⚡</span><strong>电机</strong><small>¥42</small>
+      </button>
+    </section>
+
+    <section id="coach" class="coach" aria-live="polite">
+      <span id="coachIcon">👁️</span>
+      <div><strong id="coachTitle">先看守则，再看顾客</strong><p id="coachText">符合守则的人才是异常。点中可疑顾客，状态会变为“拒绝”。</p></div>
+    </section>
+
+    <button id="restartButton" class="restart-button" type="button">重新开始</button>
+  </main>
+
+  <div id="upgradeModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="upgradeTitle">
+    <div class="modal-sheet">
+      <span class="sheet-handle"></span>
+      <p class="modal-kicker">熬过一轮 · 选择一项永久改装</p>
+      <h2 id="upgradeTitle">下一轮，你想怎么经营？</h2>
+      <div id="upgradeChoices" class="upgrade-choices"></div>
+    </div>
+  </div>
+
+  <div id="resultModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="resultTitle">
+    <div class="modal-sheet result-sheet">
+      <p class="modal-kicker">凌晨四点 · 本局结算</p>
+      <h2 id="resultTitle">你守到了天亮</h2>
+      <p id="resultText"></p>
+      <div class="result-stats">
+        <div><span>识破异常</span><strong id="resultCorrect">0</strong></div>
+        <div><span>误拒顾客</span><strong id="resultFalse">0</strong></div>
+        <div><span>击退威胁</span><strong id="resultKills">0</strong></div>
+      </div>
+      <button id="resultRetryButton" class="result-button" type="button">换一种经营方式再来</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
